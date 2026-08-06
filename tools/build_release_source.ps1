@@ -1,12 +1,20 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$OutputRoot = ""
+    [string]$OutputRoot = "",
+    [string]$Python = "python",
+    [switch]$SkipQualityChecks
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = [System.IO.Path]::GetFullPath(
     (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 )
+if (-not $SkipQualityChecks) {
+    & (Join-Path $projectRoot "tools\quality_check.ps1") -Python $Python
+    if ($LASTEXITCODE -ne 0) {
+        throw "Проверка качества завершилась с кодом $LASTEXITCODE."
+    }
+}
 $versionFile = Join-Path $projectRoot "core\app_version.py"
 $versionText = Get-Content -LiteralPath $versionFile -Raw -Encoding UTF8
 $versionMatch = [regex]::Match(
@@ -46,6 +54,7 @@ $rootFiles = @(
     "main.py",
     "requirements.txt",
     "requirements-build.txt",
+    "pyproject.toml",
     "KeeneticManager.spec",
     "BUILD.md"
 )
@@ -95,12 +104,28 @@ foreach ($relativePath in $rootFiles + $toolFiles) {
 }
 
 $releaseProfile = [ordered]@{
-    profile_id = "$version-clean"
-    storage_namespace = "KeeneticManager-Beta-$version"
+    profile_id = "beta"
+    storage_namespace = "KeeneticManager-Beta"
     settings_organization = "KeeneticManagerBeta"
-    settings_application = "KeeneticManager-$version"
-    router_credential_service = "KeeneticManager.$version.Router.Admin"
-    smb_credential_service = "KeeneticManager.$version.SMB"
+    settings_application = "KeeneticManager-Beta"
+    router_credential_service = "KeeneticManager.Beta.Router.Admin"
+    smb_credential_service = "KeeneticManager.Beta.SMB"
+    legacy_storage_namespaces = @(
+        "KeeneticManager-Beta-1.0.1-beta",
+        "KeeneticManager-Beta-1.0.0-beta1"
+    )
+    legacy_settings_applications = @(
+        "KeeneticManager-1.0.1-beta",
+        "KeeneticManager-1.0.0-beta1"
+    )
+    legacy_router_credential_services = @(
+        "KeeneticManager.1.0.1-beta.Router.Admin",
+        "KeeneticManager.1.0.0-beta1.Router.Admin"
+    )
+    legacy_smb_credential_services = @(
+        "KeeneticManager.1.0.1-beta.SMB",
+        "KeeneticManager.1.0.0-beta1.SMB"
+    )
 }
 $releaseProfile | ConvertTo-Json |
     Set-Content -LiteralPath (

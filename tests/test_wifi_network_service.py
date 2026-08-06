@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import ast
 import copy
 import shlex
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from core.services.wifi_network_service import (
     WiFiNetworkService,
@@ -515,6 +515,43 @@ class NoMwsClient(FakeClient):
 
 
 class WiFiNetworkServiceTests(unittest.TestCase):
+    def test_cached_client_sample_preserves_measurement_interval(self) -> None:
+        service = WiFiNetworkService(FakeClient())
+
+        def networks(rxbytes: int, txbytes: int) -> list[dict[str, Any]]:
+            return [
+                {
+                    "clients": [
+                        {
+                            "mac": "aa:bb:cc:dd:ee:ff",
+                            "rxbytes": rxbytes,
+                            "txbytes": txbytes,
+                        }
+                    ]
+                }
+            ]
+
+        first = networks(100, 200)
+        second = networks(200, 300)
+        cached = networks(200, 300)
+        fourth = networks(300, 400)
+        with patch(
+            "core.services.wifi_network_service.time.monotonic",
+            side_effect=(100.0, 105.0, 107.0, 110.0),
+        ):
+            service.update_client_activity(first, fresh_sample=True)
+            service.update_client_activity(second, fresh_sample=True)
+            service.update_client_activity(cached, fresh_sample=False)
+            service.update_client_activity(fourth, fresh_sample=True)
+
+        self.assertAlmostEqual(second[0]["clients"][0]["rx_bps"], 160.0)
+        self.assertAlmostEqual(cached[0]["clients"][0]["rx_bps"], 160.0)
+        self.assertAlmostEqual(fourth[0]["clients"][0]["rx_bps"], 160.0)
+        self.assertEqual(
+            service.client_counters["aa:bb:cc:dd:ee:ff"][0],
+            110.0,
+        )
+
     def test_validation_and_band_normalization(self) -> None:
         self.assertTrue(WiFiNetworkService.valid_ssid("Home"))
         self.assertFalse(WiFiNetworkService.valid_ssid(""))
@@ -3937,7 +3974,12 @@ class WiFiNetworkServiceTests(unittest.TestCase):
                 }
             },
         )
-        result = service._enrich_logical_metadata([network], snapshot)[0]
+        result = service._reconcile_logical_networks(
+            [network],
+            snapshot,
+            interface_data={},
+            interface_config_data={},
+        )[0]
         self.assertFalse(result["enabled"])
         self.assertFalse(result["online"])
         self.assertFalse(result["band_states"]["2.4"]["enabled"])

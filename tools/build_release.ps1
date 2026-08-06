@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [string]$Python = "python",
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+    [switch]$SkipQualityChecks
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +31,26 @@ $applicationExe = Join-Path $applicationDirectory "KeeneticManager.exe"
 
 Push-Location $projectRoot
 try {
+    if (-not $SkipQualityChecks) {
+        $qualityScript = Join-Path $projectRoot "tools\quality_check.ps1"
+        $testsPath = Join-Path $projectRoot "tests"
+        if (
+            (Test-Path -LiteralPath $qualityScript -PathType Leaf) -and
+            (Test-Path -LiteralPath $testsPath -PathType Container)
+        ) {
+            & $qualityScript -Python $Python
+            if ($LASTEXITCODE -ne 0) {
+                throw "Проверка качества завершилась с кодом $LASTEXITCODE."
+            }
+        }
+        else {
+            Write-Host (
+                "Чистая сборочная копия уже прошла проверки " +
+                "перед экспортом; тесты в неё не включены."
+            ) -ForegroundColor DarkGray
+        }
+    }
+
     & $Python -c "import PyInstaller" 2>$null
     if ($LASTEXITCODE -ne 0) {
         throw (
@@ -109,12 +130,20 @@ try {
         Join-Path $portableDirectory "portable.flag"
     ) -Encoding UTF8
     $portableProfile = [ordered]@{
-        profile_id = "$version-portable"
-        storage_namespace = "KeeneticManager-Portable-$version"
+        profile_id = "portable"
+        storage_namespace = "KeeneticManager-Portable"
         settings_organization = "KeeneticManagerPortable"
-        settings_application = "KeeneticManager-$version-portable"
-        router_credential_service = "KeeneticManager.$version.Portable.Router.Admin"
-        smb_credential_service = "KeeneticManager.$version.Portable.SMB"
+        settings_application = "KeeneticManager-Portable"
+        router_credential_service = "KeeneticManager.Portable.Router.Admin"
+        smb_credential_service = "KeeneticManager.Portable.SMB"
+        legacy_router_credential_services = @(
+            "KeeneticManager.1.0.1-beta.Portable.Router.Admin",
+            "KeeneticManager.1.0.0-beta1.Portable.Router.Admin"
+        )
+        legacy_smb_credential_services = @(
+            "KeeneticManager.1.0.1-beta.Portable.SMB",
+            "KeeneticManager.1.0.0-beta1.Portable.SMB"
+        )
     }
     $portableProfile | ConvertTo-Json | Set-Content -LiteralPath (
         Join-Path $portableDirectory "portable_profile.json"

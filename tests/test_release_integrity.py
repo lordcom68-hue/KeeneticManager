@@ -5,14 +5,14 @@ from pathlib import Path
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
-    def test_release_version_is_101_beta(self) -> None:
+    def test_release_version_is_102_beta(self) -> None:
         from core.app_version import (
             APP_RELEASE_STATUS,
             APP_RELEASE_TRACK,
             APP_VERSION,
         )
 
-        self.assertEqual(APP_VERSION, "1.0.1-beta")
+        self.assertEqual(APP_VERSION, "1.0.2-beta")
         self.assertEqual(APP_RELEASE_STATUS, "beta")
         self.assertEqual(APP_RELEASE_TRACK, "beta")
 
@@ -26,10 +26,38 @@ class ReleaseIntegrityTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("1.0.0-beta1-clean", source_builder)
-        self.assertIn('profile_id = "$version-clean"', source_builder)
+        self.assertIn('profile_id = "beta"', source_builder)
+        self.assertIn(
+            'storage_namespace = "KeeneticManager-Beta"',
+            source_builder,
+        )
         self.assertIn("portable.flag", release_builder)
         self.assertIn("portable_profile.json", release_builder)
         self.assertIn("Compress-Archive", release_builder)
+
+    def test_router_http_is_centralized_in_rci_transport(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "core"
+        forbidden = (
+            ".session.get(",
+            ".session.post(",
+            ".session.request(",
+            "session.request(",
+            "requests.get(",
+            "requests.post(",
+            "requests.request(",
+        )
+        offenders: list[str] = []
+        for source_path in root.rglob("*.py"):
+            if source_path.name == "rci_transport.py":
+                continue
+            source = source_path.read_text(encoding="utf-8")
+            for marker in forbidden:
+                if marker in source:
+                    offenders.append(
+                        f"{source_path.relative_to(root)}: {marker}"
+                    )
+
+        self.assertEqual(offenders, [])
 
     def test_router_ordering_contract_is_present(self) -> None:
         from core.database import Database
@@ -347,10 +375,8 @@ class ReleaseIntegrityTests(unittest.TestCase):
             "self.interface_service = InterfaceService(self)",
             source,
         )
-        self.assertIn(
-            "self.interface_service.read_snapshot()",
-            source,
-        )
+        self.assertIn("self.interface_service.read_runtime()", source)
+        self.assertIn("loader=self.interface_service.read_config", source)
         self.assertIn(
             "return self.interface_service.set_enabled",
             source,
@@ -590,7 +616,8 @@ class ReleaseIntegrityTests(unittest.TestCase):
     def test_client_ping_check_methods_are_facades(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "core" / "keenetic_client.py").read_text(encoding="utf-8")
         self.assertIn("self.ping_check_service = PingCheckService(self)", source)
-        self.assertIn("self.ping_check_service.read_snapshot()", source)
+        self.assertIn("loader=self.ping_check_service.read_config", source)
+        self.assertIn("loader=self.ping_check_service.read_status", source)
         self.assertIn("self.ping_check_service.enrich_connection(", source)
         self.assertNotIn("История Ping Check в рамках текущего сеанса", source)
 

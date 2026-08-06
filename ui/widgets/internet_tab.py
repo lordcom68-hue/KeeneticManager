@@ -8,7 +8,6 @@ from typing import Any
 from PySide6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
-    QSettings,
     QTimer,
     Qt,
     Signal,
@@ -32,11 +31,6 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
-)
-
-from core.app_profile import (
-    SETTINGS_APPLICATION,
-    SETTINGS_ORGANIZATION,
 )
 
 from core.debug_log import write_priority_debug
@@ -4918,10 +4912,6 @@ class InternetTab(QWidget):
     ) -> None:
         super().__init__(parent)
 
-        self.settings = QSettings(
-            SETTINGS_ORGANIZATION,
-            f"{SETTINGS_APPLICATION}.InternetPriorities",
-        )
         self.router_id: int | None = None
         self.cards: dict[
             str,
@@ -5439,7 +5429,7 @@ class InternetTab(QWidget):
             interface_id: connection
             for interface_id, connection in zip(
                 interface_ids,
-                connections,
+                connections, strict=False,
             )
         }
 
@@ -5596,7 +5586,7 @@ class InternetTab(QWidget):
             interface_id
             for interface_id, connection in zip(
                 interface_ids,
-                connections,
+                connections, strict=False,
             )
             if self._connection_has_priority(
                 connection
@@ -5639,7 +5629,7 @@ class InternetTab(QWidget):
             interface_id: connection
             for interface_id, connection in zip(
                 interface_ids,
-                connections,
+                connections, strict=False,
             )
         }
 
@@ -5904,7 +5894,7 @@ class InternetTab(QWidget):
 
         for interface_id, connection in zip(
             interface_ids,
-            connections,
+            connections, strict=False,
         ):
             try:
                 value = int(
@@ -5972,101 +5962,6 @@ class InternetTab(QWidget):
 
         self.cards = {}
 
-    def _add_new_priority_interfaces(
-        self,
-        interface_ids: list[str],
-    ) -> None:
-        """
-        Добавляет только действительно новые WAN-интерфейсы.
-
-        Уже известные, но временно отсутствующие интерфейсы
-        остаются в self.priorities со своей прежней ролью.
-        """
-        used = set(
-            self.priorities.values()
-        )
-
-        for interface_id in interface_ids:
-            if interface_id in self.priorities:
-                continue
-
-            priority = 0
-
-            while priority in used:
-                priority += 1
-
-            self.priorities[
-                interface_id
-            ] = priority
-            used.add(priority)
-
-        self._confirmed_priorities = dict(
-            self.priorities
-        )
-
-    def _load_priorities(
-        self,
-        interface_ids: list[str],
-    ) -> None:
-        saved: dict[str, int] = {}
-
-        if self.router_id is not None:
-            self.settings.beginGroup(
-                f"router/{self.router_id}"
-            )
-
-            for interface_id in interface_ids:
-                value = self.settings.value(
-                    interface_id,
-                    None,
-                )
-
-                try:
-                    saved[
-                        interface_id
-                    ] = int(value)
-                except (TypeError, ValueError):
-                    pass
-
-            self.settings.endGroup()
-
-        used: set[int] = set()
-        priorities: dict[str, int] = {}
-
-        for interface_id in interface_ids:
-            priority = saved.get(
-                interface_id
-            )
-
-            if (
-                priority is not None
-                and priority >= 0
-                and priority not in used
-            ):
-                priorities[
-                    interface_id
-                ] = priority
-                used.add(priority)
-
-        next_free = 0
-
-        for interface_id in interface_ids:
-            if interface_id in priorities:
-                continue
-
-            while next_free in used:
-                next_free += 1
-
-            priorities[
-                interface_id
-            ] = next_free
-            used.add(next_free)
-
-        self.priorities = priorities
-        self._confirmed_priorities = dict(
-            priorities
-        )
-
     def _normalize_priorities(self) -> None:
         ordered = sorted(
             self.priorities,
@@ -6118,26 +6013,6 @@ class InternetTab(QWidget):
                 position,
                 card,
             )
-
-    def _save_priorities(self) -> None:
-        if self.router_id is None:
-            return
-
-        self.settings.beginGroup(
-            f"router/{self.router_id}"
-        )
-
-        # Не очищаем всю группу: в ней могут храниться роли
-        # временно отсутствующих WAN-интерфейсов.
-        for interface_id, priority in (
-            self.priorities.items()
-        ):
-            self.settings.setValue(
-                interface_id,
-                priority,
-            )
-
-        self.settings.endGroup()
 
     def _update_summary(
         self,

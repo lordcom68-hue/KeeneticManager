@@ -235,7 +235,8 @@ class SourceBoundaryTests(unittest.TestCase):
 
     def test_refresh_and_enrichment_call_service_directly(self) -> None:
         source = (self.root / 'core' / 'keenetic_client.py').read_text(encoding='utf-8')
-        self.assertIn('self.ping_check_service.read_snapshot()', source)
+        self.assertIn('loader=self.ping_check_service.read_config', source)
+        self.assertIn('loader=self.ping_check_service.read_status', source)
         self.assertIn('self.ping_check_service.enrich_connection(', source)
 
     def test_wired_service_uses_ping_service_directly(self) -> None:

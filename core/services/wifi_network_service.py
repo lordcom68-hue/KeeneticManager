@@ -51,7 +51,7 @@ class WiFiNetworkService:
     LOGICAL_RUNTIME_QUERY = {
         "show": {"mws": {"wlan": {}}}
     }
-    LOGICAL_CACHE_TTL_SECONDS = 1.0
+    LOGICAL_CACHE_TTL_SECONDS = 15.0
     LOGICAL_TOGGLE_VERIFY_ATTEMPTS = 16
     LOGICAL_TOGGLE_VERIFY_DELAY_SECONDS = 0.5
     LOGICAL_SAVED_VERIFY_ATTEMPTS = 5
@@ -84,7 +84,7 @@ class WiFiNetworkService:
         self.known_networks: dict[str, dict[str, Any]] = {}
         self.client_counters: dict[
             str,
-            tuple[float, float, float],
+            tuple[float, float, float, float, float],
         ] = {}
         self.client_inventory: list[dict[str, Any]] = []
         self.client_port_bindings: dict[str, dict[str, Any]] = {}
@@ -106,6 +106,8 @@ class WiFiNetworkService:
         interface_config_data: dict[str, Any],
         associations_data: Any,
         hotspot_data: Any,
+        force_logical_refresh: bool = True,
+        client_data_refreshed: bool = True,
     ) -> list[dict[str, Any]]:
         combined = self._combined_interface_data(
             runtime=interface_data,
@@ -117,16 +119,20 @@ class WiFiNetworkService:
             hotspot_data=hotspot_data,
         )
         current = engine.build()
-        self.update_client_activity(current)
+        self.update_client_activity(
+            current,
+            fresh_sample=client_data_refreshed,
+        )
         current = self._enrich_network_metadata(
             current,
             interface_config_data,
         )
-        # The MWS profile list is the authoritative source for logical
-        # Wi-Fi networks. Refresh it on every normal polling cycle so
-        # changes made in the Keenetic web UI disappear from the app
-        # without a restart.
-        logical_snapshot = self.read_logical_snapshot(force=True)
+        # The MWS profile list is authoritative, but it changes much
+        # less often than runtime counters. A forced read is performed
+        # after actions, manual refreshes and on the slow config cadence.
+        logical_snapshot = self.read_logical_snapshot(
+            force=force_logical_refresh
+        )
         current = self._reconcile_logical_networks(
             current,
             logical_snapshot,
@@ -716,19 +722,6 @@ class WiFiNetworkService:
 
         return best_profile, best_interfaces
 
-    def _enrich_logical_metadata(
-        self,
-        networks: list[dict[str, Any]],
-        snapshot: WifiLogicalSnapshot,
-    ) -> list[dict[str, Any]]:
-        """Compatibility wrapper used by tests and older callers."""
-        return self._reconcile_logical_networks(
-            networks,
-            snapshot,
-            interface_data={},
-            interface_config_data={},
-        )
-
     def _reconcile_logical_networks(
         self,
         networks: list[dict[str, Any]],
@@ -1247,6 +1240,8 @@ class WiFiNetworkService:
     def update_client_activity(
         self,
         networks: list[dict[str, Any]],
+        *,
+        fresh_sample: bool = True,
     ) -> None:
         now = time.monotonic()
         seen_macs: set[str] = set()
@@ -1272,8 +1267,14 @@ class WiFiNetworkService:
                 rx_bps = 0.0
                 tx_bps = 0.0
 
-                if previous is not None:
-                    previous_time, previous_rx, previous_tx = previous
+                if previous is not None and fresh_sample:
+                    (
+                        previous_time,
+                        previous_rx,
+                        previous_tx,
+                        _previous_rx_bps,
+                        _previous_tx_bps,
+                    ) = previous
                     elapsed = now - previous_time
                     if 0.2 <= elapsed <= 30.0:
                         rx_delta = rxbytes - previous_rx
@@ -1283,11 +1284,18 @@ class WiFiNetworkService:
                         if tx_delta >= 0:
                             tx_bps = tx_delta * 8.0 / elapsed
 
-                self.client_counters[mac] = (
-                    now,
-                    rxbytes,
-                    txbytes,
-                )
+                elif previous is not None:
+                    rx_bps = previous[3]
+                    tx_bps = previous[4]
+
+                if fresh_sample:
+                    self.client_counters[mac] = (
+                        now,
+                        rxbytes,
+                        txbytes,
+                        rx_bps,
+                        tx_bps,
+                    )
                 client["rx_bps"] = rx_bps
                 client["tx_bps"] = tx_bps
                 client["to_client_bps"] = tx_bps
@@ -1296,8 +1304,9 @@ class WiFiNetworkService:
                     rx_bps + tx_bps >= 512.0
                 )
 
-        for mac in set(self.client_counters) - seen_macs:
-            self.client_counters.pop(mac, None)
+        if fresh_sample:
+            for mac in set(self.client_counters) - seen_macs:
+                self.client_counters.pop(mac, None)
 
     def _merge_client_port_bindings(
         self,
@@ -3566,18 +3575,6 @@ class WiFiNetworkService:
 
         return changed, failures
 
-    def _repair_legacy_access_points(
-        self,
-        profile_id: str,
-        interfaces: list[str],
-    ) -> list[str]:
-        changed, _failures = self._set_mapped_access_points_enabled(
-            profile_id,
-            interfaces,
-            True,
-        )
-        return changed
-
     def delete_network(
         self,
         network_reference: Any,
@@ -4508,30 +4505,6 @@ class WiFiNetworkService:
         if not success:
             return False, message
         return self.verify_logical_deleted(profile_id)
-
-    def _restore_logical_enabled(
-        self,
-        profile_id: str,
-        enabled: bool,
-    ) -> tuple[bool, str]:
-        success, message = self.client.execute_rci_batch(
-            [
-                {
-                    "mws": {
-                        "wlan": {
-                            "id": profile_id,
-                            "enable": bool(enabled),
-                        }
-                    }
-                },
-                {"system": {"configuration": {"save": {}}}},
-            ],
-            operation_name="Откат состояния Wi-Fi сети",
-        )
-        self._invalidate_logical_snapshot()
-        if not success:
-            return False, message
-        return self.verify_logical_enabled(profile_id, enabled)
 
     def _restore_logical_profile(
         self,

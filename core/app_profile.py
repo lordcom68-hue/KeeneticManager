@@ -15,6 +15,10 @@ class AppProfile:
     settings_application: str = "KeeneticManager"
     router_credential_service: str = "KeeneticManager.Router.Admin"
     smb_credential_service: str = "KeeneticManager.SMB"
+    legacy_storage_namespaces: tuple[str, ...] = ()
+    legacy_settings_applications: tuple[str, ...] = ()
+    legacy_router_credential_services: tuple[str, ...] = ()
+    legacy_smb_credential_services: tuple[str, ...] = ()
 
 
 DEFAULT_APP_PROFILE = AppProfile()
@@ -59,6 +63,31 @@ def _safe_value(
     ):
         return default
     return value
+
+
+def _safe_values(
+    data: dict[str, Any],
+    key: str,
+    *,
+    path_component: bool = False,
+) -> tuple[str, ...]:
+    raw_values = data.get(key)
+    if not isinstance(raw_values, list):
+        return ()
+
+    values: list[str] = []
+    for raw_value in raw_values:
+        value = str(raw_value or "").strip()
+        if not value or len(value) > 128:
+            continue
+        if path_component and any(
+            marker in value
+            for marker in ("/", "\\", "..")
+        ):
+            continue
+        if value not in values:
+            values.append(value)
+    return tuple(values)
 
 
 def load_app_profile(
@@ -109,6 +138,23 @@ def load_app_profile(
             "smb_credential_service",
             defaults.smb_credential_service,
         ),
+        legacy_storage_namespaces=_safe_values(
+            raw,
+            "legacy_storage_namespaces",
+            path_component=True,
+        ),
+        legacy_settings_applications=_safe_values(
+            raw,
+            "legacy_settings_applications",
+        ),
+        legacy_router_credential_services=_safe_values(
+            raw,
+            "legacy_router_credential_services",
+        ),
+        legacy_smb_credential_services=_safe_values(
+            raw,
+            "legacy_smb_credential_services",
+        ),
     )
 
 
@@ -118,3 +164,11 @@ SETTINGS_ORGANIZATION = APP_PROFILE.settings_organization
 SETTINGS_APPLICATION = APP_PROFILE.settings_application
 ROUTER_CREDENTIAL_SERVICE = APP_PROFILE.router_credential_service
 SMB_CREDENTIAL_SERVICE = APP_PROFILE.smb_credential_service
+LEGACY_STORAGE_NAMESPACES = APP_PROFILE.legacy_storage_namespaces
+LEGACY_SETTINGS_APPLICATIONS = APP_PROFILE.legacy_settings_applications
+LEGACY_ROUTER_CREDENTIAL_SERVICES = (
+    APP_PROFILE.legacy_router_credential_services
+)
+LEGACY_SMB_CREDENTIAL_SERVICES = (
+    APP_PROFILE.legacy_smb_credential_services
+)

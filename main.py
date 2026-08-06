@@ -8,12 +8,14 @@ configure_portable_environment()
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import QSettings
 
 from core.app_profile import (
     SETTINGS_APPLICATION,
     SETTINGS_ORGANIZATION,
 )
 from core.credential_store import CredentialStoreError
+from core.settings_migration import migrate_legacy_settings
 from ui.main_window import MainWindow
 from ui.theme import apply_application_theme
 from ui.window_icon_manager import install_window_icon_manager
@@ -31,6 +33,7 @@ def main() -> int:
     app.setApplicationName("Keenetic Manager")
     app.setOrganizationName(SETTINGS_ORGANIZATION)
     app.setOrganizationDomain(SETTINGS_APPLICATION)
+    migrate_legacy_settings(QSettings)
     app_icon = QIcon(str(APP_ICON_PATH))
     app.setWindowIcon(app_icon)
     install_window_icon_manager(app, app_icon)

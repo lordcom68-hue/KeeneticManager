@@ -279,7 +279,6 @@ class WifiNetworkCard(QFrame):
             )
 
         self.action_button.setVisible(not wired)
-        deletable = bool(network.get("deletable", False))
         self.delete_button.setVisible(False)
         self.delete_button.setEnabled(False)
         self.delete_button.setToolTip("")

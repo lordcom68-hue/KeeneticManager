@@ -1013,7 +1013,7 @@ class ClientsTab(QWidget):
         values = self._export_row(client)
         text = "\n".join(
             f"{caption}: {value}"
-            for caption, value in zip(self.EXPORT_HEADERS, values)
+            for caption, value in zip(self.EXPORT_HEADERS, values, strict=False)
             if str(value).strip()
         )
         self._copy_selected_value(

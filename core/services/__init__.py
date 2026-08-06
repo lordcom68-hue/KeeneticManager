@@ -17,6 +17,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "RciTransport": ("rci_transport", "RciTransport"),
     "InterfaceService": ("interface_service", "InterfaceService"),
     "InterfaceSnapshot": ("interface_service", "InterfaceSnapshot"),
+    "OperationResult": ("operation_result", "OperationResult"),
+    "OperationState": ("operation_result", "OperationState"),
     "PingCheckService": ("ping_check_service", "PingCheckService"),
     "PingCheckSnapshot": ("ping_check_service", "PingCheckSnapshot"),
     "PriorityService": ("priority_service", "PriorityService"),

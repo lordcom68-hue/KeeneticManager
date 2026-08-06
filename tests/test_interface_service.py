@@ -9,6 +9,7 @@ from core.services.interface_service import (
     InterfaceService,
     InterfaceSnapshot,
 )
+from core.services.operation_result import OperationState
 
 
 class FakeResponse:
@@ -70,9 +71,42 @@ class FakeSession:
         return value
 
 
+class FakeTransport:
+    def __init__(self, session: FakeSession) -> None:
+        self.session = session
+        self.last_error: str | None = None
+
+    def request(self, **kwargs: Any) -> FakeResponse | None:
+        method = str(kwargs["method"]).lower()
+        path = str(kwargs["path"])
+        payload = kwargs.get("json_payload")
+        try:
+            if method == "post":
+                response = self.session.post(
+                    "https://router.example" + path,
+                    json=payload,
+                    timeout=float(kwargs["timeout"]),
+                    verify=False,
+                    allow_redirects=True,
+                )
+            else:
+                response = self.session.get(
+                    "https://router.example" + path,
+                    timeout=float(kwargs["timeout"]),
+                    verify=False,
+                    allow_redirects=True,
+                )
+        except requests.RequestException as error:
+            self.last_error = str(error)
+            return None
+        if not response.ok and not kwargs.get("return_error_response"):
+            return None
+        return response
+
 class FakeClient:
     def __init__(self) -> None:
         self.session: FakeSession | None = FakeSession()
+        self.transport = FakeTransport(self.session)
         self.base_url = "https://router.example"
         self.timeout = 8.0
         self.verify_ssl = False
@@ -300,13 +334,27 @@ class InterfaceServiceTests(unittest.TestCase):
 
         self.assertTrue(success)
         self.assertIn(
-            "соединение с роутером прервалось",
+            "состояние будет проверено",
             message,
         )
         self.assertIn(
             "Ethernet0",
             client._manually_disabled_interfaces,
         )
+
+    def test_connection_loss_has_typed_unknown_state(self) -> None:
+        client, service = self.build_service()
+        assert client.session is not None
+        client.session.post_responses = [
+            requests.ConnectionError("closed")
+        ]
+
+        result = service.set_enabled_result("Ethernet0", False)
+
+        self.assertEqual(result.state, OperationState.UNKNOWN)
+        self.assertTrue(result.accepted)
+        self.assertFalse(result.confirmed)
+        self.assertEqual(result.details["interface_id"], "Ethernet0")
 
     def test_enable_network_error_is_reported(self) -> None:
         client, service = self.build_service()
@@ -322,7 +370,7 @@ class InterfaceServiceTests(unittest.TestCase):
 
         self.assertFalse(success)
         self.assertIn(
-            "Ошибка отправки команды",
+            "не подтвердил выполнение",
             message,
         )
 

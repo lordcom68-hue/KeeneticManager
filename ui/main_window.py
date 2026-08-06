@@ -982,7 +982,7 @@ class MainWindow(QMainWindow):
         for title, connected_page, disconnected_page in zip(
             self.tab_titles,
             self.connected_tab_widgets,
-            self.disconnected_tab_widgets,
+            self.disconnected_tab_widgets, strict=False,
         ):
             container = QWidget()
             stack = QStackedLayout(container)
@@ -1273,7 +1273,7 @@ class MainWindow(QMainWindow):
                 stack.currentWidget() is widget
                 for stack, widget in zip(
                     self.tab_page_stacks,
-                    desired_widgets,
+                    desired_widgets, strict=False,
                 )
             )
         ):
@@ -1285,7 +1285,7 @@ class MainWindow(QMainWindow):
         try:
             for stack, widget in zip(
                 self.tab_page_stacks,
-                desired_widgets,
+                desired_widgets, strict=False,
             ):
                 if stack.currentWidget() is not widget:
                     stack.setCurrentWidget(widget)

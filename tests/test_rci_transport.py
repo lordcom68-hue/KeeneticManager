@@ -288,7 +288,7 @@ class RciTransportTests(unittest.TestCase):
             transport.connection_type = "KeenDNS"
             transport.connected = True
 
-            with self.assertRaises(Exception):
+            with self.assertRaises(KeeneticConnectionError):
                 transport.request(
                     method="POST",
                     path="/rci/",
@@ -300,6 +300,28 @@ class RciTransportTests(unittest.TestCase):
                 )
 
         self.assertEqual(len(session.responses), 1)
+
+    def test_optional_request_can_return_authorization_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            transport = self.make_transport(Path(directory))
+            transport.session = FakeSession([FakeResponse(403)])
+            transport.base_url = "http://192.168.1.1"
+            transport.connection_type = "Локальная сеть"
+            transport.connected = True
+            transport.reauthenticate = lambda: False  # type: ignore[method-assign]
+
+            response = transport.request(
+                method="POST",
+                path="/rci/interface/down",
+                endpoint="interface/down",
+                required=False,
+                timeout=1.0,
+                return_error_response=True,
+                retry_transient=False,
+            )
+
+        self.assertIsNotNone(response)
+        self.assertEqual(response.status_code, 403)
 
     def test_password_hash_is_stable(self) -> None:
         value = RciTransport.create_password_hash(

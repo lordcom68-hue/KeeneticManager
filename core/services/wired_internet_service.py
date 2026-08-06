@@ -3241,7 +3241,7 @@ class WiredInternetService:
             [
                 {
                     "parse": (
-                        f"interface "
+                        "interface "
                         + self.client.quote_cli_argument(transport_id)
                         + " up"
                     )

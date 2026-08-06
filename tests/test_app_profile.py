@@ -30,6 +30,14 @@ class AppProfileTests(unittest.TestCase):
                         "settings_application": "KeeneticManager-Beta-Test",
                         "router_credential_service": "Beta.Router.Admin",
                         "smb_credential_service": "Beta.SMB",
+                        "legacy_storage_namespaces": [
+                            "KeeneticManager-Beta-Old",
+                            "../unsafe",
+                            "KeeneticManager-Beta-Old",
+                        ],
+                        "legacy_router_credential_services": [
+                            "Old.Router.Admin",
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -49,6 +57,14 @@ class AppProfileTests(unittest.TestCase):
             "Beta.Router.Admin",
         )
         self.assertEqual(profile.smb_credential_service, "Beta.SMB")
+        self.assertEqual(
+            profile.legacy_storage_namespaces,
+            ("KeeneticManager-Beta-Old",),
+        )
+        self.assertEqual(
+            profile.legacy_router_credential_services,
+            ("Old.Router.Admin",),
+        )
 
     def test_unsafe_storage_namespace_falls_back(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

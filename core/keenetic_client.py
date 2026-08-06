@@ -105,6 +105,10 @@ class KeeneticClient:
     ту же HTTP-сессию без повторной авторизации.
     """
 
+    CLIENT_REFRESH_INTERVAL_SECONDS = 5.0
+    CONFIG_REFRESH_INTERVAL_SECONDS = 15.0
+    USB_REFRESH_INTERVAL_SECONDS = 15.0
+
     def __init__(
         self,
         username: str,
@@ -182,6 +186,8 @@ class KeeneticClient:
         # Последний успешный RCI-снимок сохраняется немедленно при
         # первом обновлении, затем не чаще одного раза в 30 секунд.
         self._last_snapshot_cache_write = 0.0
+        self._refresh_cache: dict[str, Any] = {}
+        self._refresh_cache_times: dict[str, float] = {}
 
     @property
     def session(self) -> requests.Session | None:
@@ -364,7 +370,30 @@ class KeeneticClient:
             **self._result_state_fields(),
         )
 
-    def refresh(self) -> ConnectionResult:
+    def _cached_refresh_value(
+        self,
+        key: str,
+        *,
+        now: float,
+        interval_seconds: float,
+        force: bool,
+        loader: Any,
+    ) -> Any:
+        last_refresh = self._refresh_cache_times.get(key, 0.0)
+        if (
+            force
+            or key not in self._refresh_cache
+            or now - last_refresh >= interval_seconds
+        ):
+            self._refresh_cache[key] = loader()
+            self._refresh_cache_times[key] = now
+        return self._refresh_cache[key]
+
+    def refresh(
+        self,
+        *,
+        force_full: bool = False,
+    ) -> ConnectionResult:
         if (
             not self.connected
             or self.session is None
@@ -377,6 +406,7 @@ class KeeneticClient:
             )
 
         try:
+            now = time.monotonic()
             system_data = self.get_rci_data(
                 endpoint=RCI_ENDPOINTS["system"].path,
                 required=True,
@@ -387,38 +417,69 @@ class KeeneticClient:
                 required=False,
             )
 
-            interface_snapshot = (
-                self.interface_service.read_snapshot()
-            )
-            interface_data = interface_snapshot.runtime
+            interface_data = self.interface_service.read_runtime()
 
             # Реальный порядок интернет-каналов хранится здесь:
             # ip.global.order, а не в show/interface.priority.
-            interface_config_data = interface_snapshot.config
-
-            ping_check_snapshot = (
-                self.ping_check_service.read_snapshot()
-            )
-            ping_check_config_data = (
-                ping_check_snapshot.config
-            )
-            ping_check_status_data = (
-                ping_check_snapshot.status
+            interface_config_data = self._cached_refresh_value(
+                "interface_config",
+                now=now,
+                interval_seconds=self.CONFIG_REFRESH_INTERVAL_SECONDS,
+                force=force_full,
+                loader=self.interface_service.read_config,
             )
 
-            associations_data = self.get_rci_data(
-                endpoint=RCI_ENDPOINTS["associations"].path,
-                required=False,
+            ping_check_config_data = self._cached_refresh_value(
+                "ping_check_config",
+                now=now,
+                interval_seconds=self.CONFIG_REFRESH_INTERVAL_SECONDS,
+                force=force_full,
+                loader=self.ping_check_service.read_config,
+            )
+            ping_check_status_data = self._cached_refresh_value(
+                "ping_check_status",
+                now=now,
+                interval_seconds=self.CLIENT_REFRESH_INTERVAL_SECONDS,
+                force=force_full,
+                loader=self.ping_check_service.read_status,
             )
 
-            hotspot_data = self.get_rci_data(
-                endpoint=RCI_ENDPOINTS["hotspot"].path,
-                required=False,
+            associations_data = self._cached_refresh_value(
+                "associations",
+                now=now,
+                interval_seconds=self.CLIENT_REFRESH_INTERVAL_SECONDS,
+                force=force_full,
+                loader=lambda: self.get_rci_data(
+                    endpoint=RCI_ENDPOINTS["associations"].path,
+                    required=False,
+                ),
             )
 
-            usb_data = self.get_usb_data(
-                system_data=system_data,
-                interface_data=interface_data,
+            hotspot_data = self._cached_refresh_value(
+                "hotspot",
+                now=now,
+                interval_seconds=self.CLIENT_REFRESH_INTERVAL_SECONDS,
+                force=force_full,
+                loader=lambda: self.get_rci_data(
+                    endpoint=RCI_ENDPOINTS["hotspot"].path,
+                    required=False,
+                ),
+            )
+            client_data_refreshed = (
+                force_full
+                or self._refresh_cache_times.get("associations") == now
+                or self._refresh_cache_times.get("hotspot") == now
+            )
+
+            usb_data = self._cached_refresh_value(
+                "usb",
+                now=now,
+                interval_seconds=self.USB_REFRESH_INTERVAL_SECONDS,
+                force=force_full,
+                loader=lambda: self.get_usb_data(
+                    system_data=system_data,
+                    interface_data=interface_data,
+                ),
             )
 
             result = self.build_result(
@@ -432,6 +493,14 @@ class KeeneticClient:
                 associations_data=associations_data,
                 hotspot_data=hotspot_data,
                 usb_data=usb_data,
+                force_wifi_logical_refresh=(
+                    force_full
+                    or self._refresh_cache_times.get(
+                        "interface_config"
+                    )
+                    == now
+                ),
+                client_data_refreshed=client_data_refreshed,
             )
             result.connection_state = "connected"
             result.consecutive_failures = 0
@@ -543,11 +612,7 @@ class KeeneticClient:
             )
 
         target_session.request = guarded_request
-        setattr(
-            target_session,
-            "_keenetic_optional_rci_guard",
-            True,
-        )
+        target_session._keenetic_optional_rci_guard = True
 
     @staticmethod
     def log_hardware_guard_event(
@@ -635,6 +700,8 @@ class KeeneticClient:
         self._traffic_counters.clear()
         self._wifi_client_counters.clear()
         self._usb_rci_endpoint = None
+        self._refresh_cache.clear()
+        self._refresh_cache_times.clear()
 
     def create_session(self) -> requests.Session:
         return self.transport.create_session()
@@ -1009,6 +1076,8 @@ class KeeneticClient:
         associations_data: Any = None,
         hotspot_data: Any = None,
         usb_data: Any = None,
+        force_wifi_logical_refresh: bool = False,
+        client_data_refreshed: bool = True,
     ) -> ConnectionResult:
         memory_total = self.extract_integer(
             system_data,
@@ -1139,6 +1208,8 @@ class KeeneticClient:
             ),
             associations_data=associations_data,
             hotspot_data=hotspot_data,
+            force_logical_refresh=force_wifi_logical_refresh,
+            client_data_refreshed=client_data_refreshed,
         )
         client_inventory = list(
             self.wifi_network_service.client_inventory
@@ -1993,7 +2064,7 @@ class KeeneticClient:
         if not runtime_info:
             return {}, "Не удалось подтвердить физический WAN-порт."
 
-        for candidate_id, candidate in interface_config.items():
+        for _candidate_id, candidate in interface_config.items():
             if not isinstance(candidate, dict):
                 continue
 
@@ -3834,12 +3905,6 @@ class KeeneticClient:
 
         port_id = str(
             port.get("id")
-            or ""
-        ).strip()
-
-        port_label = str(
-            port.get("label")
-            or port.get("interface-name")
             or ""
         ).strip()
 
@@ -6245,38 +6310,11 @@ class KeeneticClient:
         """
         Отправляет структурную DNS-команду через /rci/.
         """
-        if self.session is None or self.base_url is None:
-            return False, "Нет активной сессии с роутером."
-
-        try:
-            response = self.session.post(
-                f"{self.base_url}/rci/",
-                json=payload,
-                timeout=max(self.timeout, 15),
-                verify=self.verify_ssl,
-                allow_redirects=True,
-            )
-        except requests.RequestException as error:
-            return False, str(error)
-
-        try:
-            response_data: Any = response.json()
-        except ValueError:
-            response_data = None
-
-        errors = self.extract_explicit_rci_errors(
-            response_data
+        success, _data, message = self.post_rci_query(
+            payload,
+            timeout=15,
         )
-
-        if not response.ok or errors:
-            details = (
-                "; ".join(errors)
-                or response.text.strip()[:500]
-                or f"HTTP {response.status_code}"
-            )
-            return False, details
-
-        return True, ""
+        return success, message
 
     def execute_parse_command(
         self,
@@ -6289,40 +6327,11 @@ class KeeneticClient:
         ошибками. Фактический результат проверяется отдельно
         через show/sc/interface.
         """
-        if self.session is None or self.base_url is None:
-            return False, "Нет активной сессии с роутером."
-
-        try:
-            response = self.session.post(
-                f"{self.base_url}/rci/",
-                json={
-                    "parse": str(command),
-                },
-                timeout=max(self.timeout, 15),
-                verify=self.verify_ssl,
-                allow_redirects=True,
-            )
-        except requests.RequestException as error:
-            return False, str(error)
-
-        try:
-            response_data: Any = response.json()
-        except ValueError:
-            response_data = None
-
-        errors = self.extract_explicit_rci_errors(
-            response_data
+        success, _data, message = self.post_rci_query(
+            {"parse": str(command)},
+            timeout=15,
         )
-
-        if not response.ok or errors:
-            details = (
-                "; ".join(errors)
-                or response.text.strip()[:500]
-                or f"HTTP {response.status_code}"
-            )
-            return False, details
-
-        return True, ""
+        return success, message
 
     def get_interface_cli_name(
         self,
@@ -7515,45 +7524,12 @@ class KeeneticClient:
             }
         )
 
-        try:
-            response = self.session.post(
-                f"{self.base_url}/rci/",
-                json=commands,
-                timeout=max(self.timeout, 15),
-                verify=self.verify_ssl,
-                allow_redirects=True,
-            )
-        except requests.RequestException as error:
-            return (
-                False,
-                f"Не удалось применить настройки: {error}",
-            )
-
-        if response.status_code in (401, 403):
-            return (
-                False,
-                "Недостаточно прав для изменения интерфейса.",
-            )
-
-        try:
-            response_data: Any = response.json()
-        except ValueError:
-            response_data = None
-
-        errors = self.extract_batch_rci_errors(
-            response_data
+        applied, apply_message = self.execute_rci_batch(
+            commands,
+            operation_name="Изменение параметров подключения",
         )
-
-        if not response.ok or errors:
-            details = (
-                "; ".join(errors)
-                or response.text.strip()[:500]
-                or f"HTTP {response.status_code}"
-            )
-            return (
-                False,
-                f"Роутер отклонил изменение: {details}",
-            )
+        if not applied:
+            return False, apply_message
 
         verified, message = (
             self.verify_interface_settings(

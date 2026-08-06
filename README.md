@@ -1,8 +1,8 @@
 # Keenetic Manager
 
 Настольное приложение для мониторинга и управления роутерами Keenetic.
-Текущая версия — `1.0.1-beta`. Это предварительная версия для проверки
-исправлений и интерфейса перед следующим стабильным выпуском.
+Текущая версия — `1.0.2-beta`. Это стабильная контрольная точка в ходе
+разработки, предназначенная для технической проверки перед следующим выпуском.
 
 ## Установка и запуск
 
@@ -48,13 +48,18 @@ python main.py
 ## Проверка проекта
 
 ```powershell
-python -m unittest discover -s tests -p "test_*.py"
+python -m pip install -r requirements-dev.txt
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\quality_check.ps1
 ```
+
+Проверка компилирует Python-файлы, запускает Ruff, полный комплект тестов и
+контролирует минимальное покрытие. Сборщики патча и выпуска запускают её
+автоматически; отключать проверку следует только после уже успешного прогона.
 
 ## Сборка патча
 
 ```powershell
-.\tools\build_patch.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build_patch.ps1
 ```
 
 Сборщик включает полный согласованный набор исходников, тестов и документации,
@@ -74,7 +79,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build_release.ps
 ## Чистый бекап исходников
 
 ```powershell
-.\tools\build_clean_backup.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build_clean_backup.ps1
 ```
 
 Команда создаёт рядом с проектом папку и ZIP с версией и временем в имени.

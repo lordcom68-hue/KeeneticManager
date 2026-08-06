@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import requests
-
 from core.debug_log import write_priority_debug
 from core.services.runtime_paths import LOGS_DIR
 
@@ -436,41 +434,15 @@ class PriorityService:
             "SEND priorities="
             + json.dumps(requested, ensure_ascii=False, sort_keys=True)
         )
-        try:
-            response = self.client.session.post(
-                f"{self.client.base_url}/rci/",
-                json=commands,
-                timeout=max(self.client.timeout, 15),
-                verify=self.client.verify_ssl,
-                allow_redirects=True,
-            )
-        except requests.RequestException as error:
-            self.write_log(
-                f"REQUEST_ERROR {type(error).__name__}: {error}"
-            )
-            return (
-                False,
-                f"Не удалось отправить порядок интернет-каналов: {error}",
-            )
-        if response.status_code in (401, 403):
-            self.write_log(f"HTTP_ERROR status={response.status_code}")
-            return False, "Недостаточно прав для изменения подключений."
-        try:
-            response_data: Any = response.json()
-        except ValueError:
-            response_data = None
-        self.write_log(
-            f"RESPONSE status={response.status_code} "
-            f"body={json.dumps(response_data, ensure_ascii=False, default=str)}"
+        applied, apply_message = self.client.execute_rci_batch(
+            commands,
+            operation_name="Изменение порядка интернет-каналов",
         )
-        errors = self.client.extract_batch_rci_errors(response_data)
-        if not response.ok or errors:
-            details = (
-                "; ".join(errors)
-                or str(response.text or "").strip()[:500]
-                or f"HTTP {response.status_code}"
-            )
-            return False, f"Роутер отклонил изменение: {details}"
+        self.write_log(
+            f"RESULT success={applied} message={apply_message}"
+        )
+        if not applied:
+            return False, apply_message
         verified, verification_message = self.verify_global_interface_orders(
             requested
         )

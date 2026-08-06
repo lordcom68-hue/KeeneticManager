@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from core.app_profile import ROUTER_CREDENTIAL_SERVICE
+from core.app_profile import (
+    LEGACY_ROUTER_CREDENTIAL_SERVICES,
+    ROUTER_CREDENTIAL_SERVICE,
+)
 
 try:
     import keyring
@@ -53,10 +56,20 @@ class RouterCredentialStore:
         *,
         backend: Any = None,
         service_name: str | None = None,
+        fallback_services: tuple[str, ...] | None = None,
     ) -> None:
         self.backend = backend if backend is not None else keyring
         self.service_name = str(
             service_name or self.SERVICE_NAME
+        )
+        self.fallback_services = tuple(
+            service
+            for service in (
+                fallback_services
+                if fallback_services is not None
+                else LEGACY_ROUTER_CREDENTIAL_SERVICES
+            )
+            if service and service != self.service_name
         )
 
     def new_reference(self) -> str:
@@ -135,6 +148,9 @@ class RouterCredentialStore:
                 error,
             ) from error
 
+        if value is None:
+            value = self._read_legacy_password(location.account)
+
         if value is None and required:
             raise CredentialNotFoundError(
                 "Сохранённый пароль роутера не найден в Windows "
@@ -143,6 +159,28 @@ class RouterCredentialStore:
             )
 
         return str(value) if value is not None else None
+
+    def _read_legacy_password(self, account: str) -> str | None:
+        for service in self.fallback_services:
+            try:
+                value = self.backend.get_password(service, account)
+            except Exception:
+                continue
+            if value is None:
+                continue
+
+            secret = str(value)
+            try:
+                self.backend.set_password(
+                    self.service_name,
+                    account,
+                    secret,
+                )
+            except Exception:
+                # Старый пароль всё равно можно использовать в этом запуске.
+                pass
+            return secret
+        return None
 
     def set_password(
         self,

@@ -5,8 +5,6 @@ import time
 from typing import Any
 from urllib.parse import quote
 
-import requests
-
 from core.services.interface_service import InterfaceService
 
 
@@ -573,28 +571,36 @@ class WirelessIspService:
         if self.client.session is None or self.client.base_url is None:
             return False, "Нет активной сессии с роутером.", []
 
-        try:
-            response = self.client.session.get(
-                f"{self.client.base_url}/rci/show/site-survey/{quote(master_id, safe='')}",
-                timeout=max(self.client.timeout, 30),
-                verify=self.client.verify_ssl,
-                allow_redirects=True,
+        response = self.client.transport.request(
+            method="GET",
+            path=(
+                "/rci/show/site-survey/"
+                f"{quote(master_id, safe='')}"
+            ),
+            endpoint="show/site-survey",
+            required=False,
+            timeout=max(self.client.timeout, 30),
+            allow_reauthentication=True,
+            retry_transient=True,
+        )
+        if response is None:
+            attempts.append(
+                (
+                    "GET",
+                    self.client.transport.last_error
+                    or "Пустой HTTP-ответ.",
+                )
             )
-        except requests.RequestException as error:
-            attempts.append(("GET", str(error)))
         else:
             try:
                 data: Any = response.json()
             except ValueError:
                 data = response.text
 
-            if response.ok:
-                networks = self.parse_wireless_site_survey(data)
-                if networks:
-                    return True, f"Найдено сетей: {len(networks)}.", networks
-                attempts.append(("GET", data))
-            else:
-                attempts.append(("GET", response.text))
+            networks = self.parse_wireless_site_survey(data)
+            if networks:
+                return True, f"Найдено сетей: {len(networks)}.", networks
+            attempts.append(("GET", data))
 
         for payload in (
             {"show": {"site-survey": {"name": master_id}}},

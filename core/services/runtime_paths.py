@@ -5,7 +5,10 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from core.app_profile import APP_STORAGE_NAMESPACE
+from core.app_profile import (
+    APP_STORAGE_NAMESPACE,
+    LEGACY_STORAGE_NAMESPACES,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -45,6 +48,7 @@ def migrate_legacy_database(
     *,
     target: Path | None = None,
     legacy: Path | None = None,
+    legacy_candidates: tuple[Path, ...] | None = None,
 ) -> bool:
     """Copy the freshest legacy database once, preserving the prior target."""
     target_path = (
@@ -52,14 +56,38 @@ def migrate_legacy_database(
         if target is not None
         else DATABASE_DIR / "routers.db"
     )
-    legacy_path = (
-        Path(legacy)
-        if legacy is not None
-        else LEGACY_DATABASE_DIR / "routers.db"
+    if legacy is not None:
+        candidates = (Path(legacy),)
+    elif legacy_candidates is not None:
+        candidates = tuple(Path(path) for path in legacy_candidates)
+    else:
+        candidates = (
+            LEGACY_DATABASE_DIR / "routers.db",
+            *(
+                APP_DATA_DIR.parent
+                / namespace
+                / "database"
+                / "routers.db"
+                for namespace in LEGACY_STORAGE_NAMESPACES
+                if namespace != APP_STORAGE_NAMESPACE
+            ),
+        )
+
+    existing_candidates = tuple(
+        path
+        for path in candidates
+        if path.is_file()
+        and path.resolve() != target_path.resolve()
+    )
+    if not existing_candidates:
+        return False
+    legacy_path = max(
+        existing_candidates,
+        key=lambda path: path.stat().st_mtime_ns,
     )
 
     marker_path = target_path.parent / ".legacy_migration_complete"
-    if marker_path.is_file() or not legacy_path.is_file():
+    if marker_path.is_file():
         return False
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +121,7 @@ def migrate_legacy_database(
         (
             "Legacy database migration completed at "
             f"{datetime.now().astimezone().isoformat()}.\n"
+            f"Source: {legacy_path}\n"
         ),
         encoding="utf-8",
     )

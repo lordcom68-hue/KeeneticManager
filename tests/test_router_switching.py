@@ -285,7 +285,7 @@ class RouterSwitchingTests(unittest.TestCase):
         for title, connected_page, disconnected_page in zip(
             ("Мониторинг", "Интернет", "Настройки"),
             connected,
-            disconnected,
+            disconnected, strict=False,
         ):
             container = QWidget()
             stack = QStackedLayout(container)
@@ -321,7 +321,7 @@ class RouterSwitchingTests(unittest.TestCase):
         self.assertTrue(
             all(
                 stack.currentWidget() is widget
-                for stack, widget in zip(stacks, connected)
+                for stack, widget in zip(stacks, connected, strict=False)
             )
         )
         self.assertTrue(all(not widget.was_detached for widget in connected))
@@ -334,7 +334,7 @@ class RouterSwitchingTests(unittest.TestCase):
         self.assertTrue(
             all(
                 stack.currentWidget() is widget
-                for stack, widget in zip(stacks, disconnected)
+                for stack, widget in zip(stacks, disconnected, strict=False)
             )
         )
         self.assertTrue(

@@ -318,7 +318,9 @@ class RouterMonitor(QThread):
                         )
                         first_cycle = False
                     else:
-                        result = client.refresh()
+                        result = client.refresh(
+                            force_full=force_refresh
+                        )
 
                 except Exception as error:
                     # Ошибка обычного цикла обновления не должна
@@ -1355,7 +1357,7 @@ class RouterMonitor(QThread):
 
         try:
             if client.connected:
-                result = client.refresh()
+                result = client.refresh(force_full=True)
             else:
                 router = self.router_snapshot()
                 result = client.connect_to_router(

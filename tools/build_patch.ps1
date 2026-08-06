@@ -1,7 +1,9 @@
 ﻿[CmdletBinding()]
 param(
     [string]$OutputRoot = "",
-    [string[]]$SupportedBaseVersions = @()
+    [string[]]$SupportedBaseVersions = @(),
+    [string]$Python = "python",
+    [switch]$SkipQualityChecks
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +11,12 @@ $ErrorActionPreference = "Stop"
 $projectRoot = [System.IO.Path]::GetFullPath(
     (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 )
+if (-not $SkipQualityChecks) {
+    & (Join-Path $projectRoot "tools\quality_check.ps1") -Python $Python
+    if ($LASTEXITCODE -ne 0) {
+        throw "Проверка качества завершилась с кодом $LASTEXITCODE."
+    }
+}
 $versionFile = Join-Path $projectRoot "core\app_version.py"
 $versionText = Get-Content -LiteralPath $versionFile -Raw -Encoding UTF8
 $versionMatch = [regex]::Match(
@@ -21,6 +29,12 @@ if (-not $versionMatch.Success) {
 }
 
 $patchVersion = $versionMatch.Groups["version"].Value
+$patchNotesPath = Join-Path $projectRoot (
+    "docs\release_notes\PATCH_NOTES_$patchVersion.md"
+)
+if (-not (Test-Path -LiteralPath $patchNotesPath -PathType Leaf)) {
+    throw "Файл примечаний к патчу не найден: $patchNotesPath"
+}
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $projectRoot "dist\patches"
 }
@@ -36,7 +50,7 @@ if ($SupportedBaseVersions.Count -eq 0) {
         $changelog = Get-Content -LiteralPath $changelogPath -Raw -Encoding UTF8
         $previousVersion = [regex]::Matches(
             $changelog,
-            '(?m)^##\s+(?<version>\d+\.\d+\.\d+)'
+            '(?m)^##\s+(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)'
         ) | ForEach-Object {
             $_.Groups["version"].Value
         } | Where-Object {
@@ -55,7 +69,9 @@ $rootFiles = @(
     "main.py",
     "README.md",
     "requirements.txt",
-    "PATCH_NOTES_$patchVersion.md"
+    "requirements-build.txt",
+    "requirements-dev.txt",
+    "pyproject.toml"
 )
 $payloadDirectories = @("core", "ui", "tests", "tools", "docs")
 
@@ -92,10 +108,8 @@ foreach ($directoryName in $payloadDirectories) {
 
 $payloadFiles = @($relativePaths | Sort-Object -Unique)
 $removedFiles = @(
-    "core/rci/redaction.py"
-    Get-ChildItem -LiteralPath (Join-Path $projectRoot "docs\release_notes") `
-        -File -Filter "PATCH_NOTES_*.md" |
-        ForEach-Object { $_.Name }
+    "core/rci/redaction.py",
+    "PATCH_NOTES_1.0.0-beta1.md"
 ) | Sort-Object -Unique
 
 foreach ($relativePath in $removedFiles) {
@@ -160,7 +174,7 @@ $manifest | ConvertTo-Json -Depth 5 |
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install_patch.ps1") `
     -Destination (Join-Path $packageRoot "install_patch.ps1") `
     -Force
-Copy-Item -LiteralPath (Join-Path $projectRoot "PATCH_NOTES_$patchVersion.md") `
+Copy-Item -LiteralPath $patchNotesPath `
     -Destination (Join-Path $packageRoot "PATCH_NOTES_$patchVersion.md") `
     -Force
 

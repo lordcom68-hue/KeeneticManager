@@ -59,9 +59,21 @@ class FakeSession:
         )
 
 
+class FakeTransport:
+    def __init__(self, session: FakeSession) -> None:
+        self.session = session
+        self.last_error: str | None = None
+
+    def request(self, **kwargs: Any) -> FakeResponse:
+        return self.session.get(
+            "https://router.invalid" + str(kwargs["path"]),
+        )
+
+
 class FakeScanClient:
     def __init__(self) -> None:
         self.session = FakeSession()
+        self.transport = FakeTransport(self.session)
         self.base_url = "https://router.invalid"
         self.timeout = 2.0
         self.verify_ssl = False

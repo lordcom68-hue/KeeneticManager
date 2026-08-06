@@ -56,7 +56,8 @@ class FakeKeeneticClient:
         del kwargs
         return self._result()
 
-    def refresh(self) -> FakeResult:
+    def refresh(self, *, force_full: bool = False) -> FakeResult:
+        del force_full
         return self._result()
 
     def close(self) -> None:

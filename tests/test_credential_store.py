@@ -60,6 +60,22 @@ class RouterCredentialStoreTests(unittest.TestCase):
                 required=True,
             )
 
+    def test_legacy_service_is_read_and_copied_to_stable_service(self) -> None:
+        backend = FakeBackend()
+        reference = "router-existing"
+        backend.set_password("Old.Router.Admin", reference, "secret")
+        store = RouterCredentialStore(
+            backend=backend,
+            service_name="Stable.Router.Admin",
+            fallback_services=("Old.Router.Admin",),
+        )
+
+        self.assertEqual(store.get_password(reference), "secret")
+        self.assertEqual(
+            backend.get_password("Stable.Router.Admin", reference),
+            "secret",
+        )
+
     def test_missing_backend_is_rejected(self) -> None:
         store = RouterCredentialStore(backend=None)
         store.backend = None

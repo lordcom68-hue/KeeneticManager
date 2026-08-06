@@ -479,6 +479,7 @@ class RciTransport:
         json_payload: Any = None,
         allow_reauthentication: bool = True,
         retry_transient: bool | None = None,
+        return_error_response: bool = False,
     ) -> requests.Response | None:
         if self.session is None or self.base_url is None:
             if required:
@@ -607,6 +608,8 @@ class RciTransport:
                     raise KeeneticAuthenticationError(
                         "Сессия авторизации завершена."
                     )
+                if return_error_response:
+                    return response
                 return None
 
             if not response.ok:
@@ -676,6 +679,8 @@ class RciTransport:
                         f"HTTP-ошибка {response.status_code} "
                         f"при запросе {endpoint}."
                     )
+                if return_error_response:
+                    return response
                 return None
 
             had_failures = self.consecutive_failures > 0

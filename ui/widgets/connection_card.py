@@ -90,7 +90,7 @@ class TrafficChart(QWidget):
             current < previous
             for previous, current in zip(
                 normalized,
-                normalized[1:],
+                normalized[1:], strict=False,
             )
         ):
             return []

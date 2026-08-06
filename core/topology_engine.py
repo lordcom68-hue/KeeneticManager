@@ -728,34 +728,6 @@ class TopologyEngine:
             )
         )
 
-    def _is_local_or_service(
-        self,
-        interface_id: str,
-        interface_type: str,
-        name: str,
-        description: str,
-    ) -> bool:
-        text = " ".join(
-            (
-                interface_id,
-                interface_type,
-                name,
-                description,
-            )
-        ).lower()
-
-        if self._is_wireless_isp(
-            interface_id,
-            interface_type,
-            name,
-        ):
-            return False
-
-        return any(
-            marker in text
-            for marker in self.LOCAL_MARKERS
-        )
-
     def _is_wireless_isp(
         self,
         interface_id: str,

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import quote
 
-import requests
+from core.services.operation_result import OperationResult
 
 
 SleepFunction = Callable[[float], None]
@@ -210,58 +210,69 @@ class InterfaceService:
         interface_id: str,
         enabled: bool,
     ) -> tuple[bool, str]:
+        return self.set_enabled_result(
+            interface_id,
+            enabled,
+        ).as_legacy_tuple()
+
+    def set_enabled_result(
+        self,
+        interface_id: str,
+        enabled: bool,
+    ) -> OperationResult:
         name = str(
             interface_id
             or ""
         ).strip()
 
         if not name:
-            return False, "Не указано имя интерфейса."
+            return OperationResult.rejected_result(
+                "Не указано имя интерфейса."
+            )
 
         if (
             self.client.session is None
             or self.client.base_url is None
         ):
-            return False, "Нет активной сессии с роутером."
+            return OperationResult.rejected_result(
+                "Нет активной сессии с роутером."
+            )
 
         action = "up" if enabled else "down"
         payload = {"name": name}
 
-        try:
-            response = self.client.session.post(
-                (
-                    f"{self.client.base_url}/rci/"
-                    f"interface/{action}"
-                ),
-                json=payload,
-                timeout=self.client.timeout,
-                verify=self.client.verify_ssl,
-                allow_redirects=True,
-            )
-        except requests.RequestException as error:
+        response = self.client.transport.request(
+            method="POST",
+            path=f"/rci/interface/{action}",
+            endpoint=f"interface/{action}",
+            required=False,
+            timeout=self.client.timeout,
+            json_payload=payload,
+            allow_reauthentication=True,
+            retry_transient=False,
+            return_error_response=True,
+        )
+
+        if response is None:
             # При выключении текущего WAN связь может оборваться
             # до получения ответа, хотя команда уже применена.
             if not enabled:
-                self.client._manually_disabled_interfaces.add(
-                    name
+                self.client._manually_disabled_interfaces.add(name)
+                return OperationResult.unknown_result(
+                    "Команда выключения отправлена; состояние будет проверено после переподключения.",
+                    interface_id=name,
+                    requested_enabled=False,
                 )
-                return (
-                    True,
-                    (
-                        "Команда выключения отправлена; "
-                        "соединение с роутером прервалось."
-                    ),
-                )
-
-            return (
-                False,
-                f"Ошибка отправки команды: {error}",
+            return OperationResult.rejected_result(
+                "Роутер не подтвердил выполнение команды.",
+                interface_id=name,
+                requested_enabled=True,
             )
 
         if response.status_code in (401, 403):
-            return (
-                False,
+            return OperationResult.rejected_result(
                 "Недостаточно прав для изменения интерфейса.",
+                http_status=response.status_code,
             )
 
         response_data: Any = None
@@ -313,22 +324,25 @@ class InterfaceService:
                         name
                     )
 
-                return (
-                    True,
+                return OperationResult.confirmed_result(
                     (
                         "Интерфейс включён."
                         if enabled
                         else "Интерфейс выключен."
                     ),
+                    interface_id=name,
+                    enabled=enabled,
+                    verification=state_text,
                 )
 
-            return (
-                False,
+            return OperationResult.rejected_result(
                 (
                     "Команда принята, но состояние "
                     "интерфейса не подтверждено: "
                     f"{state_text}"
                 ),
+                interface_id=name,
+                requested_enabled=enabled,
             )
 
         details = (
@@ -337,13 +351,15 @@ class InterfaceService:
             or "неизвестная ошибка"
         )
 
-        return (
-            False,
+        return OperationResult.rejected_result(
             (
                 "Роутер отклонил команду. "
                 f"HTTP {response.status_code}: "
                 f"{details}"
             ),
+            interface_id=name,
+            requested_enabled=enabled,
+            http_status=response.status_code,
         )
 
     def reconnect(
@@ -484,56 +500,38 @@ class InterfaceService:
 
         attempts = (
             (
-                "post",
-                (
-                    f"{self.client.base_url}"
-                    "/rci/show/interface/stat"
-                ),
+                "POST",
+                "/rci/show/interface/stat",
                 {"name": name},
             ),
             (
-                "post",
-                (
-                    f"{self.client.base_url}"
-                    "/rci/show/interface"
-                ),
+                "POST",
+                "/rci/show/interface",
                 {
                     "name": name,
                     "stat": {},
                 },
             ),
             (
-                "get",
-                (
-                    f"{self.client.base_url}"
-                    "/rci/show/interface/stat"
-                    f"?name={quote(name, safe='')}"
-                ),
+                "GET",
+                "/rci/show/interface/stat"
+                f"?name={quote(name, safe='')}",
                 None,
             ),
         )
 
-        for method, url, payload in attempts:
-            try:
-                if method == "post":
-                    response = self.client.session.post(
-                        url,
-                        json=payload,
-                        timeout=self.client.timeout,
-                        verify=self.client.verify_ssl,
-                        allow_redirects=True,
-                    )
-                else:
-                    response = self.client.session.get(
-                        url,
-                        timeout=self.client.timeout,
-                        verify=self.client.verify_ssl,
-                        allow_redirects=True,
-                    )
-            except requests.RequestException:
-                continue
-
-            if not response.ok:
+        for method, path, payload in attempts:
+            response = self.client.transport.request(
+                method=method,
+                path=path,
+                endpoint="show/interface/stat",
+                required=False,
+                timeout=self.client.timeout,
+                json_payload=payload,
+                allow_reauthentication=True,
+                retry_transient=(method == "GET"),
+            )
+            if response is None:
                 continue
 
             try:

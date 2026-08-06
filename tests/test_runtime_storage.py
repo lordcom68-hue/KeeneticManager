@@ -71,6 +71,27 @@ class RuntimeStorageTests(unittest.TestCase):
                 migrate_legacy_database(target=target, legacy=legacy)
             )
 
+    def test_freshest_versioned_database_is_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            older = root / "old" / "routers.db"
+            newer = root / "new" / "routers.db"
+            target = root / "stable" / "routers.db"
+            older.parent.mkdir(parents=True)
+            newer.parent.mkdir(parents=True)
+            older.write_bytes(b"older")
+            newer.write_bytes(b"newer")
+            os.utime(older, ns=(1_000_000_000, 1_000_000_000))
+            os.utime(newer, ns=(2_000_000_000, 2_000_000_000))
+
+            self.assertTrue(
+                migrate_legacy_database(
+                    target=target,
+                    legacy_candidates=(older, newer),
+                )
+            )
+            self.assertEqual(target.read_bytes(), b"newer")
+
     def test_hardware_guard_log_redacts_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

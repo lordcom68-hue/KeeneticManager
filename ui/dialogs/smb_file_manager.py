@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from core.app_profile import (
     APP_STORAGE_NAMESPACE,
+    LEGACY_SMB_CREDENTIAL_SERVICES,
     SETTINGS_APPLICATION,
     SETTINGS_ORGANIZATION,
     SMB_CREDENTIAL_SERVICE,
@@ -372,6 +373,19 @@ class SmbFileManagerDialog(QDialog):
                 self.credential_service,
                 self.credential_account,
             )
+            if not password:
+                for service in LEGACY_SMB_CREDENTIAL_SERVICES:
+                    password = keyring.get_password(
+                        service,
+                        self.credential_account,
+                    )
+                    if password:
+                        keyring.set_password(
+                            self.credential_service,
+                            self.credential_account,
+                            password,
+                        )
+                        break
         except Exception:
             password = None
 
@@ -417,10 +431,17 @@ class SmbFileManagerDialog(QDialog):
                 )
             else:
                 try:
-                    keyring.delete_password(
+                    for service in (
                         self.credential_service,
-                        self.credential_account,
-                    )
+                        *LEGACY_SMB_CREDENTIAL_SERVICES,
+                    ):
+                        try:
+                            keyring.delete_password(
+                                service,
+                                self.credential_account,
+                            )
+                        except Exception:
+                            continue
                 except Exception:
                     pass
         except Exception as error:
