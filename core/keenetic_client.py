@@ -48,6 +48,7 @@ from core.services.rescue_mode_service import (
     RescueModeService,
 )
 from core.services.system_log_service import SystemLogService
+from core.services.system_status_service import SystemStatusService
 from core.services.traffic_service import TrafficService
 from core.services.diagnostics_service import DiagnosticsService
 from core.services.runtime_paths import LOGS_DIR
@@ -153,6 +154,7 @@ class KeeneticClient:
         self.wifi_client_service = WiFiClientService(self)
         self.rescue_mode_service = RescueModeService(self)
         self.system_log_service = SystemLogService(self)
+        self.system_status_service = SystemStatusService()
 
         # Совместимые aliases для старых тестов и внешнего кода.
         # Владельцем кэшей является WiFiNetworkService.
@@ -1073,44 +1075,9 @@ class KeeneticClient:
         force_wifi_logical_refresh: bool = False,
         client_data_refreshed: bool = True,
     ) -> ConnectionResult:
-        memory_total = self.extract_integer(
-            system_data,
-            (
-                "memtotal",
-                "memory-total",
-                "memory_total",
-                "total-memory",
-            ),
-        )
-        memory_free = self.extract_integer(
-            system_data,
-            (
-                "memfree",
-                "memory-free",
-                "memory_free",
-                "free-memory",
-            ),
-        )
-
-        model = (
-            self.extract_model(version_data)
-            or self.extract_model(system_data)
-        )
-
-        if not model:
-            hostname = self.find_first_value(
-                system_data,
-                ("hostname",),
-            )
-            model = (
-                str(hostname).strip()
-                if hostname is not None
-                else None
-            )
-
-        version = (
-            self.extract_version(version_data)
-            or self.extract_version(system_data)
+        system_status = self.system_status_service.build(
+            system_data=system_data,
+            version_data=version_data,
         )
 
         topology = TopologyEngine(
@@ -1321,21 +1288,13 @@ class KeeneticClient:
                     ),
                 )
             ),
-            model=model,
-            version=version,
-            uptime=self.extract_uptime(
-                system_data
-            ),
-            cpu_load=self.extract_cpu_load(
-                system_data
-            ),
-            ram_usage=self.calculate_ram_usage(
-                memory_total=memory_total,
-                memory_free=memory_free,
-                data=system_data,
-            ),
-            memory_total=memory_total,
-            memory_free=memory_free,
+            model=system_status.model,
+            version=system_status.version,
+            uptime=system_status.uptime,
+            cpu_load=system_status.cpu_load,
+            ram_usage=system_status.ram_usage,
+            memory_total=system_status.memory_total,
+            memory_free=system_status.memory_free,
         )
 
     @classmethod
@@ -11643,197 +11602,43 @@ class KeeneticClient:
         self,
         data: dict[str, Any],
     ) -> str | None:
-        value = self.find_first_value(
-            data,
-            (
-                "model",
-                "model-name",
-                "model_name",
-                "device-model",
-                "device_model",
-                "product",
-                "product-name",
-                "product_name",
-                "description",
-            ),
-        )
-
-        if value is None:
-            return None
-
-        text = str(value).strip()
-        return text or None
+        """Совместимый фасад SystemStatusService."""
+        return self.system_status_service.extract_model(data)
 
     def extract_version(
         self,
         data: dict[str, Any],
     ) -> str | None:
-        value = self.find_first_value(
-            data,
-            (
-                "release",
-                "version",
-                "os-version",
-                "os_version",
-                "keeneticos",
-                "keeneticos-version",
-                "keeneticos_version",
-                "firmware",
-                "firmware-version",
-                "firmware_version",
-                "ndm",
-            ),
-        )
-
-        if value is not None:
-            text = self.value_to_version_text(
-                value
-            )
-
-            if text:
-                return text
-
-        return self.find_component_version(data)
+        """Совместимый фасад SystemStatusService."""
+        return self.system_status_service.extract_version(data)
 
     def find_component_version(
         self,
         data: Any,
     ) -> str | None:
-        if isinstance(data, dict):
-            name = (
-                data.get("name")
-                or data.get("component")
-                or data.get("id")
-            )
-
-            if isinstance(name, str):
-                if name.lower() in {
-                    "ndm",
-                    "keeneticos",
-                    "base",
-                    "core",
-                }:
-                    for key in (
-                        "version",
-                        "release",
-                        "current",
-                        "installed",
-                    ):
-                        value = data.get(key)
-
-                        if value is not None:
-                            text = self.value_to_version_text(
-                                value
-                            )
-                            if text:
-                                return text
-
-            for value in data.values():
-                found = self.find_component_version(
-                    value
-                )
-                if found:
-                    return found
-
-        elif isinstance(data, list):
-            for item in data:
-                found = self.find_component_version(
-                    item
-                )
-                if found:
-                    return found
-
-        return None
+        """Совместимый фасад SystemStatusService."""
+        return self.system_status_service.find_component_version(data)
 
     @staticmethod
     def value_to_version_text(
         value: Any,
     ) -> str | None:
-        if isinstance(value, (str, int, float)):
-            text = str(value).strip()
-            return text or None
-
-        if isinstance(value, dict):
-            for key in (
-                "version",
-                "release",
-                "title",
-                "current",
-                "installed",
-            ):
-                nested = value.get(key)
-
-                if isinstance(
-                    nested,
-                    (str, int, float),
-                ):
-                    text = str(nested).strip()
-                    if text:
-                        return text
-
-        return None
+        """Совместимый фасад SystemStatusService."""
+        return SystemStatusService.value_to_version_text(value)
 
     def extract_cpu_load(
         self,
         data: dict[str, Any],
     ) -> str | None:
-        value = self.find_first_value(
-            data,
-            (
-                "cpuload",
-                "cpu-load",
-                "cpu_load",
-                "cpu",
-            ),
-        )
-
-        if value is None:
-            return None
-
-        text = str(value).strip()
-
-        if not text:
-            return None
-
-        if text.endswith("%"):
-            return text
-
-        try:
-            number = float(text)
-            return (
-                f"{int(number)}%"
-                if number.is_integer()
-                else f"{number:.1f}%"
-            )
-        except ValueError:
-            return text
+        """Совместимый фасад SystemStatusService."""
+        return self.system_status_service.extract_cpu_load(data)
 
     def extract_uptime(
         self,
         data: dict[str, Any],
     ) -> str | None:
-        value = self.find_first_value(
-            data,
-            (
-                "uptime",
-                "up-time",
-                "up_time",
-            ),
-        )
-
-        if value is None:
-            return None
-
-        try:
-            seconds = int(
-                float(str(value).strip())
-            )
-        except (TypeError, ValueError):
-            return str(value)
-
-        return self.format_uptime_seconds(
-            seconds
-        )
+        """Совместимый фасад SystemStatusService."""
+        return self.system_status_service.extract_uptime(data)
 
     def calculate_ram_usage(
         self,
@@ -11841,203 +11646,41 @@ class KeeneticClient:
         memory_free: int | None,
         data: dict[str, Any],
     ) -> str | None:
-        """
-        Рассчитывает реально занятую оперативную память.
-
-        Keenetic обычно возвращает:
-            memory: "used/total"
-
-        Это значение точнее, чем memtotal - memfree,
-        поскольку memfree не учитывает освобождаемые
-        кэш и буферы.
-        """
-        direct_usage = self.find_first_value(
-            data,
-            (
-                "memload",
-                "memory-load",
-                "memory_load",
-                "ram-load",
-                "ram_usage",
-                "memory-usage",
-            ),
+        """Совместимый фасад SystemStatusService."""
+        return self.system_status_service.calculate_ram_usage(
+            memory_total=memory_total,
+            memory_free=memory_free,
+            data=data,
         )
-
-        if direct_usage is not None:
-            text = str(direct_usage).strip()
-
-            if text.endswith("%"):
-                return text
-
-            try:
-                number = float(text)
-                return self.format_percentage(number)
-            except ValueError:
-                pass
-
-        # Наиболее точное штатное поле Keenetic:
-        # например "182908/524288".
-        memory_pair = self.find_first_value(
-            data,
-            (
-                "memory",
-                "ram",
-                "memory-used-total",
-                "memory_used_total",
-            ),
-        )
-
-        parsed_pair = self.parse_memory_pair(
-            memory_pair
-        )
-
-        if parsed_pair is not None:
-            used, total = parsed_pair
-
-            if total > 0:
-                return self.format_percentage(
-                    used / total * 100
-                )
-
-        # Запасной расчёт по Linux-показателям:
-        # занято = всего - свободно - буферы - кэш.
-        memory_buffers = self.extract_integer(
-            data,
-            (
-                "membuffers",
-                "mem-buffers",
-                "memory-buffers",
-                "memory_buffers",
-            ),
-        ) or 0
-
-        memory_cache = self.extract_integer(
-            data,
-            (
-                "memcache",
-                "mem-cache",
-                "memory-cache",
-                "memory_cache",
-                "cached",
-            ),
-        ) or 0
-
-        if (
-            memory_total is not None
-            and memory_free is not None
-            and memory_total > 0
-        ):
-            used_memory = max(
-                0,
-                memory_total
-                - memory_free
-                - memory_buffers
-                - memory_cache,
-            )
-
-            return self.format_percentage(
-                used_memory / memory_total * 100
-            )
-
-        return None
 
     @staticmethod
     def parse_memory_pair(
         value: Any,
     ) -> tuple[float, float] | None:
-        if value is None:
-            return None
-
-        text = str(value).strip()
-
-        if "/" not in text:
-            return None
-
-        used_text, total_text = text.split(
-            "/",
-            maxsplit=1,
-        )
-
-        try:
-            used = float(used_text.strip())
-            total = float(total_text.strip())
-        except ValueError:
-            return None
-
-        if used < 0 or total <= 0:
-            return None
-
-        return used, total
+        """Совместимый фасад SystemStatusService."""
+        return SystemStatusService.parse_memory_pair(value)
 
     @staticmethod
     def format_percentage(
         number: float,
     ) -> str:
-        number = max(
-            0.0,
-            min(100.0, number),
-        )
-
-        if number.is_integer():
-            return f"{int(number)}%"
-
-        return f"{number:.1f}%"
+        """Совместимый фасад SystemStatusService."""
+        return SystemStatusService.format_percentage(number)
 
     @staticmethod
     def format_uptime_seconds(
         total_seconds: int,
     ) -> str:
-        if total_seconds < 0:
-            return "—"
-
-        days, remainder = divmod(
-            total_seconds,
-            86400,
-        )
-        hours, remainder = divmod(
-            remainder,
-            3600,
-        )
-        minutes, seconds = divmod(
-            remainder,
-            60,
-        )
-
-        parts: list[str] = []
-
-        if days:
-            parts.append(f"{days} дн.")
-        if hours or days:
-            parts.append(f"{hours} ч.")
-        if minutes or hours or days:
-            parts.append(f"{minutes} мин.")
-        if not parts:
-            parts.append(f"{seconds} сек.")
-
-        return " ".join(parts)
+        """Совместимый фасад SystemStatusService."""
+        return SystemStatusService.format_uptime_seconds(total_seconds)
 
     def extract_integer(
         self,
         data: dict[str, Any],
         keys: tuple[str, ...],
     ) -> int | None:
-        value = self.find_first_value(
-            data,
-            keys,
-        )
-
-        if value is None or isinstance(
-            value,
-            bool,
-        ):
-            return None
-
-        try:
-            return int(
-                float(str(value).strip())
-            )
-        except (TypeError, ValueError):
-            return None
+        """Совместимый фасад SystemStatusService."""
+        return self.system_status_service.extract_integer(data, keys)
 
     def find_first_value(
         self,

@@ -45,6 +45,11 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "RescueModeContext": ("rescue_mode_service", "RescueModeContext"),
     "RescueModeService": ("rescue_mode_service", "RescueModeService"),
     "SystemLogService": ("system_log_service", "SystemLogService"),
+    "SystemStatus": ("system_status_service", "SystemStatus"),
+    "SystemStatusService": (
+        "system_status_service",
+        "SystemStatusService",
+    ),
     "TrafficSample": ("traffic_service", "TrafficSample"),
     "TrafficService": ("traffic_service", "TrafficService"),
 }

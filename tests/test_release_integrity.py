@@ -5,14 +5,14 @@ from pathlib import Path
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
-    def test_release_version_is_103_beta(self) -> None:
+    def test_release_version_is_104_beta(self) -> None:
         from core.app_version import (
             APP_RELEASE_STATUS,
             APP_RELEASE_TRACK,
             APP_VERSION,
         )
 
-        self.assertEqual(APP_VERSION, "1.0.3-beta")
+        self.assertEqual(APP_VERSION, "1.0.4-beta")
         self.assertEqual(APP_RELEASE_STATUS, "beta")
         self.assertEqual(APP_RELEASE_TRACK, "beta")
 
@@ -395,6 +395,32 @@ class ReleaseIntegrityTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("traffic_service.calculate_counter_speeds(", wifi_source)
         self.assertNotIn("rx_delta * 8.0", wifi_source)
+
+    def test_system_status_service_owns_device_metric_calculation(self) -> None:
+        from core.services.system_status_service import (
+            SystemStatus,
+            SystemStatusService,
+        )
+
+        self.assertTrue(callable(SystemStatus))
+        for name in (
+            "build",
+            "extract_model",
+            "extract_version",
+            "extract_cpu_load",
+            "extract_uptime",
+            "calculate_ram_usage",
+        ):
+            self.assertTrue(callable(getattr(SystemStatusService, name, None)), name)
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "keenetic_client.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("self.system_status_service = SystemStatusService()", source)
+        self.assertIn("self.system_status_service.build(", source)
+        self.assertNotIn("used_memory = max(", source)
 
     def test_keenetic_client_delegates_interface_actions(self) -> None:
         source = (
