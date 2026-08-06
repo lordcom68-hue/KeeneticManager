@@ -189,6 +189,7 @@ class TrafficChart(QWidget):
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(path)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(color)
