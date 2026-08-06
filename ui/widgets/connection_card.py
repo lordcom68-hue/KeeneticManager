@@ -145,7 +145,6 @@ class TrafficChart(QWidget):
             max_value=max_value,
             width=1.8,
             sample_times=self.sample_times,
-            fill=True,
         )
 
         self.draw_series(
@@ -168,7 +167,6 @@ class TrafficChart(QWidget):
         max_value: float,
         width: float,
         sample_times: Sequence[float] | None = None,
-        fill: bool = False,
     ) -> None:
         if not values:
             return
@@ -186,15 +184,6 @@ class TrafficChart(QWidget):
                 path.moveTo(point)
             else:
                 path.lineTo(point)
-
-        if fill and len(points) > 1:
-            fill_path = QPainterPath(path)
-            fill_path.lineTo(points[-1].x(), rect.bottom())
-            fill_path.lineTo(points[0].x(), rect.bottom())
-            fill_path.closeSubpath()
-            fill_color = QColor(color)
-            fill_color.setAlpha(18)
-            painter.fillPath(fill_path, fill_color)
 
         pen = QPen(color, width)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
