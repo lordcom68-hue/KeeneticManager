@@ -1,0 +1,42 @@
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Build artefacts
+build/
+dist/
+*.egg-info/
+
+# Temporary and merge files
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*~
+
+# Local router database contains credentials
+/database/*.db
+/database/*.db-*
+
+# Runtime diagnostics and debug logs
+/logs/*
+/diagnostics_history/*
+/diagnostics/*
+*.log
+keenetic_diagnostic_*.zip
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
