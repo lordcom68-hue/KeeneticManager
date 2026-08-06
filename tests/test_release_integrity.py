@@ -5,14 +5,14 @@ from pathlib import Path
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
-    def test_release_version_is_102_beta(self) -> None:
+    def test_release_version_is_103_beta(self) -> None:
         from core.app_version import (
             APP_RELEASE_STATUS,
             APP_RELEASE_TRACK,
             APP_VERSION,
         )
 
-        self.assertEqual(APP_VERSION, "1.0.2-beta")
+        self.assertEqual(APP_VERSION, "1.0.3-beta")
         self.assertEqual(APP_RELEASE_STATUS, "beta")
         self.assertEqual(APP_RELEASE_TRACK, "beta")
 
@@ -363,6 +363,38 @@ class ReleaseIntegrityTests(unittest.TestCase):
                 ),
                 f"InterfaceService не содержит {name}",
             )
+
+    def test_traffic_service_owns_counter_calculation(self) -> None:
+        from core.services.traffic_service import TrafficSample, TrafficService
+
+        self.assertTrue(callable(TrafficSample))
+        for name in (
+            "calculate_counter_speeds",
+            "measure_connection",
+            "apply_sample",
+            "extract_link_speed_bps",
+            "reset",
+            "clear",
+        ):
+            self.assertTrue(callable(getattr(TrafficService, name, None)), name)
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "keenetic_client.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("self.traffic_service = TrafficService(self)", source)
+        self.assertIn("self.traffic_service.measure_connection(", source)
+        self.assertNotIn("delta * 8.0 / elapsed", source)
+
+        wifi_source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "services"
+            / "wifi_network_service.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("traffic_service.calculate_counter_speeds(", wifi_source)
+        self.assertNotIn("rx_delta * 8.0", wifi_source)
 
     def test_keenetic_client_delegates_interface_actions(self) -> None:
         source = (

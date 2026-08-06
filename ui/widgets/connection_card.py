@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from core.services.traffic_service import TrafficService
 from ui.widgets.status_badge import StatusBadge
 from ui.widgets.stable_expand import set_expanded_without_flicker
 
@@ -58,18 +59,7 @@ class TrafficChart(QWidget):
 
     @staticmethod
     def normalize_values(values: Sequence[float]) -> list[float]:
-        normalized: list[float] = []
-        for value in values:
-            try:
-                number = float(value)
-            except (TypeError, ValueError):
-                number = 0.0
-            normalized.append(
-                number
-                if math.isfinite(number) and number >= 0.0
-                else 0.0
-            )
-        return normalized
+        return [TrafficService.normalize_rate(value) for value in values]
 
     @staticmethod
     def normalize_times(

@@ -1030,7 +1030,7 @@ class WirelessIspService:
             )
             return False, verify_message + " Откат: " + rollback_message, {"rollback_success": rollback_success}
 
-        self.client._traffic_counters.pop(interface_id, None)
+        self.client.traffic_service.reset(interface_id)
         return (
             True,
             f"Wireless ISP {('2,4' if band == '2.4' else '5')} ГГц создан и сохранён.",
@@ -1344,7 +1344,7 @@ class WirelessIspService:
             configured = self.wireless_isp_configured_item(current_item)
 
             if not configured and not isinstance(global_config, dict):
-                self.client._traffic_counters.pop(name, None)
+                self.client.traffic_service.reset(name)
                 return True, "Wireless ISP удалён, диапазон снова свободен.", {"interface_id": name, "band": band}
 
             last_reason = "SSID или глобальная роль всё ещё присутствуют"

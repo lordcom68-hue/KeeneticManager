@@ -1243,7 +1243,8 @@ class WiFiNetworkService:
         *,
         fresh_sample: bool = True,
     ) -> None:
-        now = time.monotonic()
+        traffic_service = self.client.traffic_service
+        now = traffic_service.sample_time() if fresh_sample else 0.0
         seen_macs: set[str] = set()
 
         for network in networks:
@@ -1261,29 +1262,27 @@ class WiFiNetworkService:
                     continue
 
                 seen_macs.add(mac)
-                rxbytes = self._safe_float(client.get("rxbytes"))
-                txbytes = self._safe_float(client.get("txbytes"))
+                rxbytes = traffic_service.first_optional_number(
+                    client,
+                    keys=("rxbytes",),
+                )
+                txbytes = traffic_service.first_optional_number(
+                    client,
+                    keys=("txbytes",),
+                )
                 previous = self.client_counters.get(mac)
                 rx_bps = 0.0
                 tx_bps = 0.0
 
-                if previous is not None and fresh_sample:
-                    (
-                        previous_time,
-                        previous_rx,
-                        previous_tx,
-                        _previous_rx_bps,
-                        _previous_tx_bps,
-                    ) = previous
-                    elapsed = now - previous_time
-                    if 0.2 <= elapsed <= 30.0:
-                        rx_delta = rxbytes - previous_rx
-                        tx_delta = txbytes - previous_tx
-                        if rx_delta >= 0:
-                            rx_bps = rx_delta * 8.0 / elapsed
-                        if tx_delta >= 0:
-                            tx_bps = tx_delta * 8.0 / elapsed
-
+                if fresh_sample:
+                    rx_bps, tx_bps = (
+                        traffic_service.calculate_counter_speeds(
+                            interface_id=f"client:{mac}",
+                            rxbytes=rxbytes,
+                            txbytes=txbytes,
+                            sampled_at=now,
+                        )
+                    )
                 elif previous is not None:
                     rx_bps = previous[3]
                     tx_bps = previous[4]
@@ -1291,8 +1290,8 @@ class WiFiNetworkService:
                 if fresh_sample:
                     self.client_counters[mac] = (
                         now,
-                        rxbytes,
-                        txbytes,
+                        float(rxbytes or 0.0),
+                        float(txbytes or 0.0),
                         rx_bps,
                         tx_bps,
                     )
@@ -1307,6 +1306,7 @@ class WiFiNetworkService:
         if fresh_sample:
             for mac in set(self.client_counters) - seen_macs:
                 self.client_counters.pop(mac, None)
+                traffic_service.reset(f"client:{mac}")
 
     def _merge_client_port_bindings(
         self,

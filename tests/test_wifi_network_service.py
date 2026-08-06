@@ -5,13 +5,14 @@ import shlex
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock
 
 from core.services.wifi_network_service import (
     WiFiNetworkService,
     WifiLogicalSnapshot,
     WifiNetworkCapabilities,
 )
+from core.services.traffic_service import TrafficService
 
 
 class FakeInterfaceService:
@@ -105,6 +106,7 @@ class FakeClient:
         self.session = object()
         self.base_url = "http://router.test"
         self.interface_service = FakeInterfaceService(runtime, config)
+        self.traffic_service = TrafficService(self)
         self.mws_config = copy.deepcopy(mws_config or {})
         self.mws_runtime = copy.deepcopy(mws_runtime or {})
         self.batches: list[tuple[str, list[dict[str, Any]]]] = []
@@ -535,14 +537,13 @@ class WiFiNetworkServiceTests(unittest.TestCase):
         second = networks(200, 300)
         cached = networks(200, 300)
         fourth = networks(300, 400)
-        with patch(
-            "core.services.wifi_network_service.time.monotonic",
-            side_effect=(100.0, 105.0, 107.0, 110.0),
-        ):
-            service.update_client_activity(first, fresh_sample=True)
-            service.update_client_activity(second, fresh_sample=True)
-            service.update_client_activity(cached, fresh_sample=False)
-            service.update_client_activity(fourth, fresh_sample=True)
+        service.client.traffic_service.clock = Mock(
+            side_effect=(100.0, 105.0, 110.0, 115.0)
+        )
+        service.update_client_activity(first, fresh_sample=True)
+        service.update_client_activity(second, fresh_sample=True)
+        service.update_client_activity(cached, fresh_sample=False)
+        service.update_client_activity(fourth, fresh_sample=True)
 
         self.assertAlmostEqual(second[0]["clients"][0]["rx_bps"], 160.0)
         self.assertAlmostEqual(cached[0]["clients"][0]["rx_bps"], 160.0)
@@ -550,6 +551,11 @@ class WiFiNetworkServiceTests(unittest.TestCase):
         self.assertEqual(
             service.client_counters["aa:bb:cc:dd:ee:ff"][0],
             110.0,
+        )
+        service.update_client_activity([], fresh_sample=True)
+        self.assertNotIn(
+            "client:aa:bb:cc:dd:ee:ff",
+            service.client.traffic_service.counters,
         )
 
     def test_validation_and_band_normalization(self) -> None:

@@ -51,6 +51,7 @@ from core.services.rescue_mode_service import (
     RESCUER_MODE,
     RescueModeService,
 )
+from core.services.traffic_service import TrafficService
 from core.router_status_worker import RouterStatusWorker
 from ui.dialogs.add_router_dialog import AddRouterDialog
 from ui.dialogs.smb_file_manager import SmbFileManagerDialog
@@ -6174,13 +6175,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def normalized_traffic_speed(value: object) -> float:
-        try:
-            speed = float(value or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
-        if not math.isfinite(speed) or speed < 0.0:
-            return 0.0
-        return speed
+        return TrafficService.normalize_rate(value)
 
     def clear_router_traffic_history(self, router_id: int) -> None:
         for key in tuple(self.traffic_history):

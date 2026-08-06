@@ -52,7 +52,7 @@ class WiredInternetService:
     def _forget_interfaces(self, *interface_ids: str) -> None:
         for interface_id in interface_ids:
             self.client._manually_disabled_interfaces.discard(interface_id)
-            self.client._traffic_counters.pop(interface_id, None)
+            self.client.traffic_service.reset(interface_id)
             self.client.ping_check_service.runtime_cache.pop(
                 interface_id,
                 None,
@@ -670,7 +670,7 @@ class WiredInternetService:
                 if success:
                     cleanup_warning = ""
 
-        self.client._traffic_counters.clear()
+        self.client.traffic_service.clear()
         self.client.ping_check_service.runtime_cache.clear()
         message = (
             "Подключение удалено. Физический WAN-порт включён "
@@ -3372,7 +3372,7 @@ class WiredInternetService:
                         },
                     )
 
-        self.client._traffic_counters.clear()
+        self.client.traffic_service.clear()
         self.client.ping_check_service.runtime_cache.clear()
         protocol_title = {
             "none": "IPoE",
@@ -4572,7 +4572,7 @@ class WiredInternetService:
                     cleanup_warning = profile_message
 
         self.client._manually_disabled_interfaces.discard(name)
-        self.client._traffic_counters.pop(name, None)
+        self.client.traffic_service.reset(name)
         self.client.ping_check_service.runtime_cache.pop(name, None)
 
         message = (

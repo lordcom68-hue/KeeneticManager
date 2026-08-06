@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import ipaddress
-import math
 from pathlib import Path
 import re
 import socket
@@ -49,6 +48,7 @@ from core.services.rescue_mode_service import (
     RescueModeService,
 )
 from core.services.system_log_service import SystemLogService
+from core.services.traffic_service import TrafficService
 from core.services.diagnostics_service import DiagnosticsService
 from core.services.runtime_paths import LOGS_DIR
 
@@ -135,14 +135,6 @@ class KeeneticClient:
         self.version_data: dict[str, Any] = {}
         self.capabilities = RouterCapabilities()
 
-        # Предыдущие значения счётчиков нужны для расчёта
-        # текущей скорости, если KeeneticOS не отдаёт
-        # готовые rxspeed/txspeed.
-        self._traffic_counters: dict[
-            str,
-            tuple[float, float, float],
-        ] = {}
-
         # Интерфейсы, выключенные пользователем из приложения.
         # Они остаются в списке, чтобы их можно было включить.
         self._manually_disabled_interfaces: set[str] = set()
@@ -152,6 +144,7 @@ class KeeneticClient:
         # Интерфейсная логика вынесена в отдельный сервис.
         # KeeneticClient сохраняет старые методы как совместимый фасад.
         self.interface_service = InterfaceService(self)
+        self.traffic_service = TrafficService(self)
         self.ping_check_service = PingCheckService(self)
         self.priority_service = PriorityService(self)
         self.wired_internet_service = WiredInternetService(self)
@@ -169,6 +162,7 @@ class KeeneticClient:
         self._wifi_client_counters = (
             self.wifi_network_service.client_counters
         )
+        self._traffic_counters = self.traffic_service.counters
 
         # Поддерживаемый USB RCI-раздел определяется один раз
         # после подключения к конкретному роутеру.
@@ -697,7 +691,7 @@ class KeeneticClient:
         self.transport.close(clear_target=True)
         self.version_data = {}
         self.capabilities = RouterCapabilities()
-        self._traffic_counters.clear()
+        self.traffic_service.clear()
         self._wifi_client_counters.clear()
         self._usb_rci_endpoint = None
         self._refresh_cache.clear()
@@ -4994,7 +4988,7 @@ class KeeneticClient:
     ) -> None:
         # Все каналы одного ответа получают одинаковую метку. UI
         # отличает новое измерение от повторной отрисовки кэша.
-        traffic_sample_time = time.monotonic()
+        traffic_sample_time = self.traffic_service.sample_time()
 
         for connection in connections:
             interface_id = str(
@@ -5351,86 +5345,16 @@ class KeeneticClient:
                         None,
                     )
 
-            statistics_source, statistics = (
-                self.select_traffic_statistics(
-                    connection=connection,
-                    interface_data=interface_data,
-                )
+            traffic_sample = self.traffic_service.measure_connection(
+                connection=connection,
+                interface_data=interface_data,
+                sampled_at=traffic_sample_time,
             )
-            counter_source = statistics_source or interface_id
-
-            normalized_statistics = (
-                self.normalize_interface_statistics(
-                    statistics
-                )
+            self.traffic_service.apply_sample(
+                connection,
+                traffic_sample,
             )
-
-            rxbytes = self.first_optional_number(
-                normalized_statistics,
-                keys=(
-                    "rxbytes",
-                    "rx-bytes",
-                    "rx_bytes",
-                    "received-bytes",
-                ),
-            )
-            txbytes = self.first_optional_number(
-                normalized_statistics,
-                keys=(
-                    "txbytes",
-                    "tx-bytes",
-                    "tx_bytes",
-                    "transmitted-bytes",
-                ),
-            )
-
-            # Готовые rxspeed/txspeed намеренно не используем:
-            # в разных KeeneticOS они могут быть в байтах/с,
-            # битах/с или относиться к другому слою интерфейса.
-            calculated_rx, calculated_tx = (
-                self.calculate_counter_speeds(
-                    interface_id=counter_source,
-                    rxbytes=rxbytes,
-                    txbytes=txbytes,
-                    link_speed_bps=(
-                        self.extract_link_speed_bps(
-                            interface_data.get(
-                                counter_source,
-                                {},
-                            )
-                        )
-                    ),
-                )
-            )
-
-            connection["traffic_source"] = counter_source
-            connection["traffic_sample_time"] = traffic_sample_time
-            if rxbytes is None:
-                connection.pop("rxbytes", None)
-            else:
-                connection["rxbytes"] = rxbytes
-            if txbytes is None:
-                connection.pop("txbytes", None)
-            else:
-                connection["txbytes"] = txbytes
-            connection["rxspeed"] = calculated_rx
-            connection["txspeed"] = calculated_tx
-            connection["rxpackets"] = self.first_number(
-                normalized_statistics,
-                keys=(
-                    "rxpackets",
-                    "rx-packets",
-                    "rx_packets",
-                ),
-            )
-            connection["txpackets"] = self.first_number(
-                normalized_statistics,
-                keys=(
-                    "txpackets",
-                    "tx-packets",
-                    "tx_packets",
-                ),
-            )
+            statistics_source = traffic_sample.source_id
 
             # Дополнительные параметры для раскрытой карточки
             # во вкладке «Интернет». Используем фактические
@@ -5774,54 +5698,14 @@ class KeeneticClient:
         *sources: dict[str, Any],
         keys: tuple[str, ...],
     ) -> float:
-        for source in sources:
-            if not isinstance(source, dict):
-                continue
-
-            lowered = {
-                str(key).lower(): value
-                for key, value in source.items()
-            }
-
-            for key in keys:
-                value = lowered.get(key.lower())
-
-                if value is None:
-                    continue
-
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    continue
-
-        return 0.0
+        return TrafficService.first_number(*sources, keys=keys)
 
     @staticmethod
     def first_optional_number(
         *sources: dict[str, Any],
         keys: tuple[str, ...],
     ) -> float | None:
-        """Возвращает None, если счётчик отсутствует или повреждён."""
-        for source in sources:
-            if not isinstance(source, dict):
-                continue
-
-            lowered = {
-                str(key).lower(): value
-                for key, value in source.items()
-            }
-            for key in keys:
-                value = lowered.get(key.lower())
-                if value is None:
-                    continue
-                try:
-                    number = float(value)
-                except (TypeError, ValueError):
-                    continue
-                if math.isfinite(number) and number >= 0.0:
-                    return number
-
-        return None
+        return TrafficService.first_optional_number(*sources, keys=keys)
 
     def calculate_counter_speeds(
         self,
@@ -5830,126 +5714,18 @@ class KeeneticClient:
         txbytes: float | None,
         link_speed_bps: float | None = None,
     ) -> tuple[float, float]:
-        """
-        Рассчитывает скорость строго из байтовых счётчиков.
-
-        Формула:
-            (новые_байты - старые_байты) * 8 / секунды
-
-        Сбросы счётчиков и невозможные всплески отбрасываются.
-        """
-        # Пропавшее поле не является нулевым счётчиком. Сохраняем
-        # последнюю корректную базу, чтобы не создать ложный пик.
-        if rxbytes is None or txbytes is None:
-            return 0.0, 0.0
-        if (
-            not math.isfinite(rxbytes)
-            or not math.isfinite(txbytes)
-            or rxbytes < 0.0
-            or txbytes < 0.0
-        ):
-            return 0.0, 0.0
-
-        now = time.monotonic()
-        key = interface_id or "unknown"
-        previous = self._traffic_counters.get(key)
-
-        self._traffic_counters[key] = (
-            now,
-            rxbytes,
-            txbytes,
+        return self.traffic_service.calculate_counter_speeds(
+            interface_id=interface_id,
+            rxbytes=rxbytes,
+            txbytes=txbytes,
+            link_speed_bps=link_speed_bps,
         )
-
-        if previous is None:
-            return 0.0, 0.0
-
-        previous_time, previous_rx, previous_tx = previous
-        elapsed = now - previous_time
-
-        # Слишком короткий или слишком длинный интервал даёт
-        # неверный пик после зависания/переподключения.
-        if elapsed < 0.25 or elapsed > 30.0:
-            return 0.0, 0.0
-
-        rx_delta = rxbytes - previous_rx
-        tx_delta = txbytes - previous_tx
-
-        # Сброс одного счётчика не должен скрывать корректную
-        # скорость второго направления.
-        rx_bps = (
-            rx_delta * 8.0 / elapsed
-            if rx_delta >= 0.0
-            else 0.0
-        )
-        tx_bps = (
-            tx_delta * 8.0 / elapsed
-            if tx_delta >= 0.0
-            else 0.0
-        )
-
-        # Отбрасываем невозможные значения. Допускаем небольшой
-        # запас выше физической скорости из-за пакетной выборки.
-        if link_speed_bps and link_speed_bps > 0:
-            ceiling = link_speed_bps * 1.25
-            if rx_bps > ceiling:
-                rx_bps = 0.0
-            if tx_bps > ceiling:
-                tx_bps = 0.0
-        else:
-            # Универсальный предохранитель от скачков счётчика.
-            absolute_ceiling = 100_000_000_000.0
-            if rx_bps > absolute_ceiling:
-                rx_bps = 0.0
-            if tx_bps > absolute_ceiling:
-                tx_bps = 0.0
-
-        return rx_bps, tx_bps
 
     @staticmethod
     def extract_link_speed_bps(
         item: dict[str, Any],
     ) -> float | None:
-        if not isinstance(item, dict):
-            return None
-
-        for key in (
-            "speed",
-            "link-speed",
-            "link_speed",
-            "rate",
-        ):
-            value = item.get(key)
-
-            if value is None:
-                continue
-
-            text = str(value).strip().lower()
-
-            try:
-                number = float(text)
-            except ValueError:
-                match = re.search(
-                    r"([0-9]+(?:\.[0-9]+)?)",
-                    text,
-                )
-                if not match:
-                    continue
-                number = float(match.group(1))
-
-            if "gbit" in text or "gbps" in text:
-                return number * 1_000_000_000
-            if "mbit" in text or "mbps" in text:
-                return number * 1_000_000
-            if "kbit" in text or "kbps" in text:
-                return number * 1_000
-
-            # В Keenetic числовое поле speed обычно в Мбит/с.
-            if number <= 100_000:
-                return number * 1_000_000
-
-            return number
-
-        return None
+        return TrafficService.extract_link_speed_bps(item)
 
     @staticmethod
     def extract_ipv6_details(
