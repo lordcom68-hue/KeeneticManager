@@ -232,6 +232,30 @@ class PortStatusServiceTests(unittest.TestCase):
             [(interface_id, False)],
         )
 
+    def test_repeated_same_command_is_throttled_per_port(self) -> None:
+        interface_id = "GigabitEthernet0/2"
+        client = FakeClient(
+            physical_port(interface_id),
+            {interface_id: {"up": True}},
+        )
+        current_time = [100.0]
+        service = PortStatusService(
+            client,
+            monotonic=lambda: current_time[0],
+        )
+
+        first = service.set_enabled_result(interface_id, False)
+        current_time[0] += 0.5
+        repeated = service.set_enabled_result(interface_id, False)
+
+        self.assertTrue(first.confirmed)
+        self.assertEqual(repeated.state, OperationState.REJECTED)
+        self.assertTrue(repeated.details["throttled"])
+        self.assertEqual(
+            client.interface_service.mutations,
+            [(interface_id, False)],
+        )
+
     def test_failed_rollback_is_reported_as_partial_state(self) -> None:
         interface_id = "GigabitEthernet0/2"
         client = FakeClient(
@@ -288,6 +312,24 @@ class PortStatusServiceTests(unittest.TestCase):
 
         self.assertEqual(client.diagnostics.events[0][0], "ethernet_port_state")
         self.assertEqual(client.diagnostics.events[0][2]["state"], "confirmed")
+
+    def test_every_operation_is_written_to_persistent_history(self) -> None:
+        interface_id = "GigabitEthernet0/2"
+        client = FakeClient(
+            physical_port(interface_id),
+            {interface_id: {"up": True}},
+        )
+        records: list[tuple[str, str, dict[str, Any]]] = []
+        client.operation_history_service = SimpleNamespace(
+            record=lambda event_type, message, details: records.append(
+                (event_type, message, details)
+            )
+        )
+
+        PortStatusService(client).set_enabled_result(interface_id, False)
+
+        self.assertEqual(records[0][0], "ethernet_port_state")
+        self.assertEqual(records[0][2]["state"], "confirmed")
 
 
 if __name__ == "__main__":

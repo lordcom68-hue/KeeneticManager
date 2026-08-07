@@ -30,6 +30,9 @@ class FakeClient:
     def __init__(self, payload: Any) -> None:
         self.timeout = 3
         self.transport = FakeTransport(payload)
+        self.operation_history_service = SimpleNamespace(
+            journal_entries=lambda limit: []
+        )
 
     @staticmethod
     def extract_batch_rci_errors(_payload: Any) -> list[str]:
@@ -102,6 +105,50 @@ class SystemLogServiceTests(unittest.TestCase):
             client.transport.request_kwargs["path"],
             "/rci/",
         )
+
+    def test_read_merges_persisted_application_operations(self) -> None:
+        client = FakeClient(self.payload())
+        client.operation_history_service = SimpleNamespace(
+            journal_entries=lambda limit: [
+                {
+                    "id": "app-1",
+                    "timestamp": "2026-08-07T21:00:00+03:00",
+                    "level": "info",
+                    "level_label": "Информация",
+                    "source": "Keenetic Manager · Ethernet",
+                    "message": "Выключение LAN 3: подтверждено",
+                }
+            ][-limit:]
+        )
+
+        success, message, entries = SystemLogService(client).read(500)
+
+        self.assertTrue(success, message)
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(entries[-1]["source"], "Keenetic Manager · Ethernet")
+        self.assertIn("событий приложения: 1", message)
+
+    def test_application_history_is_shown_when_router_log_fails(self) -> None:
+        client = FakeClient([{"error": "not found"}])
+        client.extract_batch_rci_errors = lambda payload: ["not found"]
+        client.operation_history_service = SimpleNamespace(
+            journal_entries=lambda limit: [
+                {
+                    "id": "app-1",
+                    "timestamp": "2026-08-07T21:00:00+03:00",
+                    "level": "warning",
+                    "level_label": "Предупреждение",
+                    "source": "Keenetic Manager · Ethernet",
+                    "message": "Операция отменена",
+                }
+            ]
+        )
+
+        success, message, entries = SystemLogService(client).read(500)
+
+        self.assertTrue(success)
+        self.assertEqual(len(entries), 1)
+        self.assertIn("Показаны события Keenetic Manager", message)
 
     def test_worker_routes_system_log_without_full_refresh(self) -> None:
         fake_client = SimpleNamespace(

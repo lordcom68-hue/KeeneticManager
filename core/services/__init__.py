@@ -19,6 +19,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "InterfaceSnapshot": ("interface_service", "InterfaceSnapshot"),
     "OperationResult": ("operation_result", "OperationResult"),
     "OperationState": ("operation_result", "OperationState"),
+    "OperationHistoryService": (
+        "operation_history_service",
+        "OperationHistoryService",
+    ),
     "PortSnapshot": ("port_status_service", "PortSnapshot"),
     "PortStatusService": ("port_status_service", "PortStatusService"),
     "PingCheckService": ("ping_check_service", "PingCheckService"),

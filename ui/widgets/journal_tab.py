@@ -84,10 +84,10 @@ class JournalTab(QWidget):
         header.setSpacing(8)
         titles = QVBoxLayout()
         titles.setSpacing(2)
-        title = QLabel("Системный журнал")
+        title = QLabel("Журнал")
         title.setObjectName("journalTitle")
         subtitle = QLabel(
-            "События из циклического буфера выбранного роутера."
+            "Системные события роутера и операции Keenetic Manager."
         )
         subtitle.setObjectName("journalSubtitle")
         titles.addWidget(title)
@@ -229,6 +229,16 @@ class JournalTab(QWidget):
             and not self._loaded_once
             and not self._loading
         )
+
+    def mark_stale(self) -> None:
+        """Force a refresh on the next opening after an application event."""
+        if self._router_id is None:
+            return
+        self._loaded_once = False
+        if not self._loading:
+            self.status_label.setText(
+                "Появились новые события. Обновите журнал."
+            )
 
     def requested_limit(self) -> int:
         return int(self.limit_combo.currentData() or 500)

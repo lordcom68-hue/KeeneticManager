@@ -66,6 +66,14 @@ class DiagnosticsServiceTests(unittest.TestCase):
                 history_root=root / "history",
                 logs_root=root / "logs",
             )
+            operation_history = (
+                root / "logs" / "operation_history_router_12.jsonl"
+            )
+            operation_history.parent.mkdir(parents=True, exist_ok=True)
+            operation_history.write_text(
+                '{"type":"ethernet_port_state","message":"ok"}\n',
+                encoding="utf-8",
+            )
             archive_path = service.create_offline_archive(
                 destination=root,
                 router_id=12,
@@ -85,6 +93,10 @@ class DiagnosticsServiceTests(unittest.TestCase):
                     "connection_state.json",
                 }
                 self.assertFalse(required - names)
+                self.assertIn(
+                    "logs/operation_history_router_12.jsonl",
+                    names,
+                )
 
                 router_record = archive.read(
                     "router_record.json"

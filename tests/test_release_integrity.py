@@ -5,14 +5,14 @@ from pathlib import Path
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
-    def test_release_version_is_105_beta(self) -> None:
+    def test_release_version_is_106_beta(self) -> None:
         from core.app_version import (
             APP_RELEASE_STATUS,
             APP_RELEASE_TRACK,
             APP_VERSION,
         )
 
-        self.assertEqual(APP_VERSION, "1.0.5-beta")
+        self.assertEqual(APP_VERSION, "1.0.6-beta")
         self.assertEqual(APP_RELEASE_STATUS, "beta")
         self.assertEqual(APP_RELEASE_TRACK, "beta")
 
@@ -386,6 +386,32 @@ class ReleaseIntegrityTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("self.port_status_service = PortStatusService(self)", source)
         self.assertIn("self.port_status_service.set_enabled(", source)
+
+    def test_operation_history_is_persistent_and_merged_into_journal(self) -> None:
+        from core.services.operation_history_service import OperationHistoryService
+
+        for name in ("record", "read", "journal_entries"):
+            self.assertTrue(
+                callable(getattr(OperationHistoryService, name, None)),
+                name,
+            )
+
+        client_source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "keenetic_client.py"
+        ).read_text(encoding="utf-8")
+        log_source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "services"
+            / "system_log_service.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "self.operation_history_service = OperationHistoryService(router_id)",
+            client_source,
+        )
+        self.assertIn("application_entries = self.application_entries(limit)", log_source)
 
     def test_traffic_service_owns_counter_calculation(self) -> None:
         from core.services.traffic_service import TrafficSample, TrafficService

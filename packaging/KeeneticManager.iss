@@ -1,5 +1,5 @@
 #define MyAppName "Keenetic Manager"
-#define MyAppVersion "1.0.5-beta"
+#define MyAppVersion "1.0.6-beta"
 #define MyAppPublisher "Keenetic Manager"
 #define MyAppExeName "KeeneticManager.exe"
 

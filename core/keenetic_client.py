@@ -26,6 +26,7 @@ from core.services.errors import (
 )
 from core.services.rci_transport import RciTransport
 from core.services.interface_service import InterfaceService
+from core.services.operation_history_service import OperationHistoryService
 from core.services.port_status_service import PortStatusService
 from core.services.ping_check_service import (
     PingCheckService,
@@ -146,6 +147,7 @@ class KeeneticClient:
         # Интерфейсная логика вынесена в отдельный сервис.
         # KeeneticClient сохраняет старые методы как совместимый фасад.
         self.interface_service = InterfaceService(self)
+        self.operation_history_service = OperationHistoryService(router_id)
         self.port_status_service = PortStatusService(self)
         self.traffic_service = TrafficService(self)
         self.ping_check_service = PingCheckService(self)

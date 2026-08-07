@@ -148,6 +148,16 @@ def router_snapshot_cache_path(
     return directory / f"last_snapshot_router_{suffix}.json"
 
 
+def router_operation_history_path(
+    router_id: int | None,
+    *,
+    root: Path | None = None,
+) -> Path:
+    suffix = str(router_id) if router_id is not None else "unknown"
+    directory = Path(root) if root is not None else LOGS_DIR
+    return directory / f"operation_history_router_{suffix}.jsonl"
+
+
 def legacy_router_history_path(router_id: int | None) -> Path:
     """Return the pre-0.35.11 history path inside the source tree."""
     suffix = str(router_id) if router_id is not None else "unknown"

@@ -94,6 +94,16 @@ class JournalTabTests(unittest.TestCase):
             "1",
         )
 
+    def test_new_application_event_marks_loaded_journal_stale(self) -> None:
+        tab = JournalTab()
+        tab.set_router(7)
+        tab.set_entries(self.entries())
+
+        tab.mark_stale()
+
+        self.assertTrue(tab.needs_initial_load())
+        self.assertIn("новые события", tab.status_label.text())
+
 
 if __name__ == "__main__":
     unittest.main()

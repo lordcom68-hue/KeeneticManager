@@ -54,6 +54,7 @@ class SystemLogService:
         max_lines: int = DEFAULT_MAX_LINES,
     ) -> tuple[bool, str, list[dict[str, Any]]]:
         limit = self.normalize_limit(max_lines)
+        application_entries = self.application_entries(limit)
         try:
             response = self.client.transport.request(
                 method="POST",
@@ -68,34 +69,78 @@ class SystemLogService:
                 retry_transient=False,
             )
         except KeeneticError as error:
-            return (
-                False,
+            return self._fallback_to_application_entries(
                 f"Не удалось получить системный журнал: {error}",
-                [],
+                application_entries,
             )
 
         if response is None:
-            return False, "Роутер вернул пустой ответ журнала.", []
+            return self._fallback_to_application_entries(
+                "Роутер вернул пустой ответ журнала.",
+                application_entries,
+            )
 
         try:
             payload: Any = response.json()
         except ValueError:
-            return False, "Роутер вернул журнал в неизвестном формате.", []
+            return self._fallback_to_application_entries(
+                "Роутер вернул журнал в неизвестном формате.",
+                application_entries,
+            )
 
         errors = self.client.extract_batch_rci_errors(payload)
         if errors:
-            return (
-                False,
+            return self._fallback_to_application_entries(
                 "Не удалось получить системный журнал: "
                 + "; ".join(errors),
-                [],
+                application_entries,
             )
 
         entries = self.normalize_response(payload)
+        entries.extend(application_entries)
         return (
             True,
-            f"Получено записей журнала: {len(entries)}.",
+            (
+                f"Получено записей журнала: {len(entries)}"
+                + (
+                    f", из них событий приложения: {len(application_entries)}"
+                    if application_entries
+                    else ""
+                )
+                + "."
+            ),
             entries,
+        )
+
+    def application_entries(self, max_lines: int) -> list[dict[str, Any]]:
+        history = getattr(self.client, "operation_history_service", None)
+        journal_entries = getattr(history, "journal_entries", None)
+        if not callable(journal_entries):
+            return []
+        try:
+            entries = journal_entries(max_lines)
+        except (OSError, TypeError, ValueError):
+            return []
+        return [
+            dict(entry)
+            for entry in entries
+            if isinstance(entry, dict)
+        ]
+
+    @staticmethod
+    def _fallback_to_application_entries(
+        router_message: str,
+        application_entries: list[dict[str, Any]],
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
+        if not application_entries:
+            return False, router_message, []
+        return (
+            True,
+            (
+                f"{router_message} Показаны события Keenetic Manager: "
+                f"{len(application_entries)}."
+            ),
+            application_entries,
         )
 
     @classmethod

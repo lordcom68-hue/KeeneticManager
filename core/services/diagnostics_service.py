@@ -16,6 +16,7 @@ from core.services.runtime_paths import (
     legacy_router_history_path,
     legacy_router_snapshot_cache_path,
     router_history_path,
+    router_operation_history_path,
     router_snapshot_cache_path,
 )
 
@@ -116,10 +117,15 @@ class DiagnosticsService:
         router_id: int | None,
         *,
         history_root: Path | None = None,
+        logs_root: Path | None = None,
     ) -> list[Path]:
         include_legacy = (
             history_root is None
             or Path(history_root) == DIAGNOSTICS_HISTORY_DIR
+        )
+        operation_path = router_operation_history_path(
+            router_id,
+            root=(LOGS_DIR if logs_root is None else logs_root),
         )
         return DiagnosticsService._unique_paths(
             [
@@ -133,6 +139,8 @@ class DiagnosticsService:
                     history_root=history_root,
                     include_legacy=include_legacy,
                 ),
+                operation_path.with_suffix(".jsonl.1"),
+                operation_path,
             ]
         )
 
@@ -264,6 +272,14 @@ class DiagnosticsService:
                 self.logs_root / f"priority_debug_router_{suffix}.log",
                 self.logs_root / "priority_debug.log",
                 self.logs_root / "hardware_guard.log",
+                router_operation_history_path(
+                    router_id,
+                    root=self.logs_root,
+                ),
+                router_operation_history_path(
+                    router_id,
+                    root=self.logs_root,
+                ).with_suffix(".jsonl.1"),
                 # Пути до 0.26.1 оставлены для совместимости.
                 PROJECT_ROOT / f"priority_debug_router_{suffix}.log",
                 PROJECT_ROOT / "priority_debug.log",
@@ -568,5 +584,6 @@ class DiagnosticsService:
         for path in self.local_data_paths(
             router_id,
             history_root=self.history_root,
+            logs_root=self.logs_root,
         ):
             path.unlink(missing_ok=True)

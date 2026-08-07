@@ -5736,6 +5736,16 @@ class MainWindow(QMainWindow):
                         ),
                     )
 
+                if hasattr(self, "journal_tab"):
+                    self.journal_tab.mark_stale()
+                    if (
+                        self.tabs.currentIndex()
+                        == self.journal_tab_index
+                    ):
+                        self.refresh_system_log(
+                            self.journal_tab.requested_limit()
+                        )
+
                 return
 
         # Обычная операция над одним WAN/VPN/портом.

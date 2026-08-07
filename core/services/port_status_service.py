@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from core.port_engine import PortEngine
 from core.services.operation_result import OperationResult, OperationState
@@ -30,8 +31,17 @@ class PortStatusService:
         re.IGNORECASE,
     )
 
-    def __init__(self, client: Any) -> None:
+    MIN_REPEAT_INTERVAL_SECONDS = 2.0
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.client = client
+        self._monotonic = monotonic
+        self._last_port_commands: dict[str, tuple[float, bool]] = {}
 
     def snapshot(
         self,
@@ -191,6 +201,29 @@ class PortStatusService:
                 )
             )
 
+        now = self._monotonic()
+        request_key = initial.interface_id.casefold()
+        previous = self._last_port_commands.get(request_key)
+        if previous is not None:
+            previous_time, previous_target = previous
+            elapsed = now - previous_time
+            if (
+                previous_target == target
+                and 0 <= elapsed < self.MIN_REPEAT_INTERVAL_SECONDS
+            ):
+                return self._finish(
+                    OperationResult.rejected_result(
+                        "Повторная команда этому порту отправлена слишком быстро.",
+                        retry_after_seconds=round(
+                            self.MIN_REPEAT_INTERVAL_SECONDS - elapsed,
+                            2,
+                        ),
+                        throttled=True,
+                        **details,
+                    )
+                )
+        self._last_port_commands[request_key] = (now, target)
+
         mutation = self.client.interface_service.set_enabled_result(
             initial.interface_id,
             target,
@@ -280,6 +313,21 @@ class PortStatusService:
             disabled.add(interface_id)
 
     def _finish(self, result: OperationResult) -> OperationResult:
+        history = getattr(self.client, "operation_history_service", None)
+        record_history = getattr(history, "record", None)
+        if callable(record_history):
+            try:
+                record_history(
+                    "ethernet_port_state",
+                    result.message,
+                    details={
+                        "state": result.state.value,
+                        **result.details,
+                    },
+                )
+            except Exception:
+                pass
+
         diagnostics = getattr(self.client, "diagnostics", None)
         record_event = getattr(diagnostics, "record_event", None)
         if callable(record_event):
