@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
+from core.rci import RouterCapabilities
 from core.services.wifi_network_service import (
     WiFiNetworkService,
     WifiLogicalSnapshot,
@@ -688,6 +689,52 @@ class WiFiNetworkServiceTests(unittest.TestCase):
 
         self.assertEqual(len(client.query_payloads), 1)
         self.assertFalse(service._logical_management_supported)
+
+    def test_transient_mws_failure_preserves_confirmed_snapshot(self) -> None:
+        mws_config, mws_runtime, _interfaces = self._logical_fixture()
+        client = FakeClient(
+            mws_config=mws_config,
+            mws_runtime=mws_runtime,
+        )
+        service = WiFiNetworkService(client)
+        confirmed = service.read_logical_snapshot(force=True)
+        confirmed_time = service._logical_snapshot_time
+
+        def timeout_query(
+            payload: Any,
+            *,
+            timeout: float = 25.0,
+        ) -> tuple[bool, Any, str]:
+            client.query_payloads.append(payload)
+            return False, None, "Истекло время ожидания RCI."
+
+        client.post_rci_query = timeout_query  # type: ignore[method-assign]
+        preserved = service.read_logical_snapshot(force=True)
+
+        self.assertEqual(preserved, confirmed)
+        self.assertTrue(service._logical_management_supported)
+        self.assertEqual(service._logical_snapshot_time, confirmed_time)
+        self.assertEqual(len(client.query_payloads), 2)
+        self.assertEqual(
+            client.diagnostics.snapshots["show/sc/mws/wlan"],
+            confirmed.config,
+        )
+
+    def test_confirmed_mws_snapshot_survives_disconnected_session(self) -> None:
+        mws_config, mws_runtime, _interfaces = self._logical_fixture()
+        client = FakeClient(
+            mws_config=mws_config,
+            mws_runtime=mws_runtime,
+        )
+        service = WiFiNetworkService(client)
+        confirmed = service.read_logical_snapshot(force=True)
+        client.session = None
+
+        preserved = service.read_logical_snapshot(force=True)
+
+        self.assertEqual(preserved, confirmed)
+        self.assertTrue(service._logical_management_supported)
+        self.assertEqual(len(client.query_payloads), 1)
 
     def test_update_syncs_logical_profile_and_physical_access_points(
         self,
@@ -3802,6 +3849,69 @@ class WiFiNetworkServiceTests(unittest.TestCase):
             [item for item in networks if item.get("network_type") == "wifi"],
             [],
         )
+
+    def test_transient_first_mws_read_hides_physical_ghost_on_os5(self) -> None:
+        ghost = "WifiMaster1/AccessPoint0"
+        client = FakeClient(
+            runtime={
+                ghost: {
+                    "id": ghost,
+                    "type": "AccessPoint",
+                    "state": "down",
+                    "link": "down",
+                }
+            },
+            config={
+                ghost: {
+                    "id": ghost,
+                    "type": "AccessPoint",
+                    "ssid": "Keenetic-6256",
+                }
+            },
+        )
+        client.version_data = {"release": "5.01.C.1.0-0"}
+        client.capabilities = RouterCapabilities(
+            wifi=True,
+            mws_component=True,
+            logical_mws=True,
+            wifi_management_mode="mws",
+            keeneticos_major=5,
+            keeneticos_minor=1,
+        )
+
+        def timeout_query(
+            payload: Any,
+            *,
+            timeout: float = 25.0,
+        ) -> tuple[bool, Any, str]:
+            client.query_payloads.append(payload)
+            return False, None, "Read timed out."
+
+        client.post_rci_query = timeout_query  # type: ignore[method-assign]
+        service = WiFiNetworkService(client)
+        ghost_card = {
+            "network_type": "wifi",
+            "ssid": "Keenetic-6256",
+            "interfaces": [ghost],
+            "enabled": False,
+        }
+        ghost_key = service.network_cache_key(ghost_card)
+        service.known_networks[ghost_key] = ghost_card
+
+        networks = service.build_networks(
+            interface_data=client.interface_service.runtime,
+            interface_config_data=client.interface_service.config,
+            associations_data={},
+            hotspot_data={},
+        )
+
+        self.assertIsNone(service._logical_management_supported)
+        self.assertEqual(len(client.query_payloads), 1)
+        self.assertEqual(
+            [item for item in networks if item.get("network_type") == "wifi"],
+            [],
+        )
+        self.assertNotIn(ghost_key, service.known_networks)
 
     def test_mws_mode_purges_cached_unmapped_physical_network(self) -> None:
         interface_id = "WifiMaster0/AccessPoint1"

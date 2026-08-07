@@ -141,7 +141,7 @@ class WiFiNetworkService:
         )
         active_profiles = (
             set(logical_snapshot.config)
-            if self._logical_management_supported is True
+            if self._logical_profiles_are_authoritative()
             else None
         )
         result = self.merge_known_networks(
@@ -442,17 +442,10 @@ class WiFiNetworkService:
             and now - self._logical_snapshot_time
             < self.LOGICAL_CACHE_TTL_SECONDS
         ):
-            return WifiLogicalSnapshot(
-                config=copy.deepcopy(
-                    self._logical_snapshot.config
-                ),
-                runtime=copy.deepcopy(
-                    self._logical_snapshot.runtime
-                ),
-            )
+            return self._cached_logical_snapshot()
 
         if not self._session_ready():
-            return WifiLogicalSnapshot(config={}, runtime={})
+            return self._cached_logical_snapshot()
 
         declared_support = self._declared_logical_mws_support()
         if declared_support is False:
@@ -473,12 +466,12 @@ class WiFiNetworkService:
 
         query = getattr(self.client, "post_rci_query", None)
         if not callable(query):
-            return WifiLogicalSnapshot(config={}, runtime={})
+            return self._cached_logical_snapshot()
 
         config: dict[str, Any] = {}
         runtime: dict[str, Any] = {}
 
-        success, data, _error = query(
+        success, data, error = query(
             [
                 copy.deepcopy(self.LOGICAL_CONFIG_QUERY),
                 copy.deepcopy(self.LOGICAL_RUNTIME_QUERY),
@@ -492,11 +485,17 @@ class WiFiNetworkService:
             if len(data) > 1:
                 runtime = self._extract_logical_runtime(data[1])
 
-        elif not success:
-            # One combined probe is sufficient for an unknown/new firmware.
-            # Do not retry both paths separately: that produced four identical
-            # `not found` records during every refresh cycle.
-            self._logical_management_supported = False
+        else:
+            if not success and self._logical_query_is_unsupported(error):
+                # One combined probe is sufficient for an unsupported
+                # firmware. Repeating a confirmed `not found` request only
+                # pollutes the router journal.
+                self._logical_management_supported = False
+            else:
+                # A timeout, disconnect or malformed response does not change
+                # router capabilities. Keep the last confirmed snapshot and
+                # leave its timestamp untouched so the next refresh retries.
+                return self._cached_logical_snapshot()
 
         snapshot = WifiLogicalSnapshot(
             config=config,
@@ -509,6 +508,32 @@ class WiFiNetworkService:
         )
         self._logical_snapshot_time = now
         return snapshot
+
+    def _cached_logical_snapshot(self) -> WifiLogicalSnapshot:
+        return WifiLogicalSnapshot(
+            config=copy.deepcopy(self._logical_snapshot.config),
+            runtime=copy.deepcopy(self._logical_snapshot.runtime),
+        )
+
+    @staticmethod
+    def _logical_query_is_unsupported(error: Any) -> bool:
+        text = str(error or "").strip().casefold()
+        return any(
+            marker in text
+            for marker in (
+                "not found",
+                "unknown command",
+                "unsupported",
+                "не найден",
+                "не поддерж",
+            )
+        )
+
+    def _logical_profiles_are_authoritative(self) -> bool:
+        return bool(
+            self._logical_management_supported is True
+            or self._wifi_management_mode() == "mws"
+        )
 
     def _invalidate_logical_snapshot(self) -> None:
         self._logical_snapshot = WifiLogicalSnapshot(
@@ -752,7 +777,7 @@ class WiFiNetworkService:
         ]
 
         if not snapshot.config:
-            if self._logical_management_supported is True:
+            if self._logical_profiles_are_authoritative():
                 # A successful MWS query with an empty profile list means
                 # there are no logical Wi-Fi networks.  Physical AP config can
                 # retain old SSIDs and must not be exposed as ghost networks.
