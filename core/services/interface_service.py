@@ -127,6 +127,85 @@ class InterfaceService:
         return True
 
     @staticmethod
+    def find_interface_item(
+        data: Any,
+        interface_id: str,
+    ) -> dict[str, Any] | None:
+        """Find an interface in both flat and nested RCI payloads."""
+        name = str(interface_id or "").strip().casefold()
+        if not name:
+            return None
+
+        def walk(value: Any) -> dict[str, Any] | None:
+            if isinstance(value, dict):
+                item_id = str(value.get("id") or "").strip().casefold()
+                if item_id == name:
+                    return value
+
+                for key, child in value.items():
+                    if (
+                        str(key).strip().casefold() == name
+                        and isinstance(child, dict)
+                    ):
+                        return child
+
+                for child in value.values():
+                    found = walk(child)
+                    if found is not None:
+                        return found
+            elif isinstance(value, list):
+                for child in value:
+                    found = walk(child)
+                    if found is not None:
+                        return found
+            return None
+
+        return walk(data)
+
+    @staticmethod
+    def runtime_admin_state(
+        item: dict[str, Any] | None,
+    ) -> bool | None:
+        """Return the administrative state without confusing it with link."""
+        if not isinstance(item, dict):
+            return None
+
+        summary = item.get("summary")
+        conf = ""
+        if isinstance(summary, dict):
+            layer = summary.get("layer")
+            if isinstance(layer, dict):
+                conf = str(layer.get("conf") or "").strip().lower()
+
+        if conf == "disabled":
+            return False
+        if conf:
+            return True
+
+        if "up" in item:
+            return InterfaceService.truthy(item.get("up"))
+        if "down" in item:
+            return not InterfaceService.truthy(item.get("down"))
+
+        # state=down can mean that no cable is connected.  It is not an
+        # administrative disable signal by itself.
+        if str(item.get("state") or "").strip().lower() == "up":
+            return True
+        return None
+
+    @staticmethod
+    def config_admin_state(
+        item: dict[str, Any] | None,
+    ) -> bool | None:
+        if not isinstance(item, dict):
+            return None
+        if "up" in item:
+            return InterfaceService.truthy(item.get("up"))
+        if "down" in item:
+            return not InterfaceService.truthy(item.get("down"))
+        return None
+
+    @staticmethod
     def interface_is_up(
         item: dict[str, Any],
     ) -> bool:
@@ -333,6 +412,7 @@ class InterfaceService:
                     interface_id=name,
                     enabled=enabled,
                     verification=state_text,
+                    verified=verified,
                 )
 
             return OperationResult.rejected_result(
@@ -343,6 +423,7 @@ class InterfaceService:
                 ),
                 interface_id=name,
                 requested_enabled=enabled,
+                mutation_may_have_applied=True,
             )
 
         details = (
@@ -433,52 +514,47 @@ class InterfaceService:
         for _ in range(4):
             self._sleep(0.7)
 
-            data = self.read_runtime(
-                required=False
+            snapshot = self.read_snapshot()
+            runtime_item = self.find_interface_item(
+                snapshot.runtime,
+                name,
             )
-
-            item = data.get(name)
-
-            if not isinstance(item, dict):
-                if not expected_enabled:
-                    return True, "интерфейс отсутствует"
-                continue
-
-            state = str(
-                item.get("state")
-                or ""
-            ).strip().lower()
-
-            summary = item.get("summary")
-            conf = ""
-
-            if isinstance(summary, dict):
-                layer = summary.get("layer")
-
-                if isinstance(layer, dict):
-                    conf = str(
-                        layer.get("conf")
-                        or ""
-                    ).strip().lower()
-
-            admin_enabled = (
-                state != "down"
-                or conf != "disabled"
+            config_item = self.find_interface_item(
+                snapshot.config,
+                name,
             )
-
-            if not expected_enabled:
-                admin_enabled = not (
-                    state == "down"
-                    or conf == "disabled"
-                )
+            runtime_enabled = self.runtime_admin_state(runtime_item)
+            config_enabled = self.config_admin_state(config_item)
+            known_states = [
+                value
+                for value in (runtime_enabled, config_enabled)
+                if value is not None
+            ]
 
             last_state = (
-                f"state={state or '—'}, "
-                f"conf={conf or '—'}"
+                "runtime="
+                + (
+                    "enabled" if runtime_enabled else "disabled"
+                    if runtime_enabled is not None else "unknown"
+                )
+                + ", config="
+                + (
+                    "enabled" if config_enabled else "disabled"
+                    if config_enabled is not None else "unknown"
+                )
             )
 
-            if admin_enabled == expected_enabled:
+            if known_states and all(
+                value == expected_enabled for value in known_states
+            ):
                 return True, last_state
+
+            if (
+                not expected_enabled
+                and runtime_item is None
+                and config_item is None
+            ):
+                return True, "интерфейс отсутствует"
 
         return False, last_state
 

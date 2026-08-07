@@ -451,6 +451,9 @@ class PortGlyph(QWidget):
         if interface_id:
             lines.append(f"Интерфейс: {interface_id}")
 
+        if bool(port.get("management_port")):
+            lines.append("Порт управления: выключение защищено")
+
         return "\n".join(lines)
 
     def enterEvent(self, event) -> None:

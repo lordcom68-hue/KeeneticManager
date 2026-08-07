@@ -3699,6 +3699,13 @@ class MainWindow(QMainWindow):
             )
             return
 
+        if router_id in self.pending_interface_batches:
+            self.statusBar().showMessage(
+                "Предыдущее переключение интерфейса ещё выполняется.",
+                3000,
+            )
+            return
+
         action = "включить" if enabled else "выключить"
         answer = ask_yes_no(
             self,
@@ -3707,9 +3714,10 @@ class MainWindow(QMainWindow):
                 f"{action.capitalize()} «{display_name}»?\n\n"
                 f"Интерфейсы: {', '.join(interfaces)}"
                 + (
-                    "\n\nЕсли этот порт используется данным компьютером, "
-                    "связь с роутером будет потеряна. Включить порт обратно "
-                    "можно будет только через Wi‑Fi или другой LAN‑порт."
+                    "\n\nПриложение проверит административное состояние "
+                    "и отменит изменение при неподтверждённом результате. "
+                    "Порт, через который открыто управление роутером, "
+                    "выключить нельзя."
                     if not enabled
                     else ""
                 )
@@ -3722,11 +3730,17 @@ class MainWindow(QMainWindow):
         unique_interfaces = list(dict.fromkeys(interfaces))
         self.pending_interface_batches[router_id] = {
             "remaining": set(unique_interfaces),
+            "interfaces": list(unique_interfaces),
             "successes": [],
             "errors": [],
             "display_name": display_name,
             "enabled": enabled,
         }
+        if hasattr(self, "clients_tab"):
+            self.clients_tab.set_port_action_pending(
+                unique_interfaces,
+                True,
+            )
 
         for interface_id in unique_interfaces:
             monitor.request_interface_state(
@@ -5680,11 +5694,22 @@ class MainWindow(QMainWindow):
                     router_id,
                     None,
                 )
+                if (
+                    router_id == self.get_selected_router_id()
+                    and hasattr(self, "clients_tab")
+                ):
+                    self.clients_tab.set_port_action_pending(
+                        list(batch.get("interfaces") or [interface_id]),
+                        False,
+                    )
+
+                if router_id != self.get_selected_router_id():
+                    return
 
                 errors = batch.get("errors")
                 display_name = str(
                     batch.get("display_name")
-                    or "Wi-Fi сеть"
+                    or "интерфейс"
                 )
                 enabled = bool(
                     batch.get("enabled")
@@ -5706,8 +5731,8 @@ class MainWindow(QMainWindow):
                         self,
                         "Готово",
                         (
-                            f"Wi-Fi сеть «{display_name}» "
-                            f"{'включена' if enabled else 'выключена'}."
+                            f"Операция завершена: «{display_name}» — "
+                            f"интерфейс {'включён' if enabled else 'выключен'}."
                         ),
                     )
 

@@ -54,6 +54,12 @@ class PortGlyphTests(unittest.TestCase):
         self.assertNotIn("Скорость:", glyph.toolTip())
         self.assertNotIn("Дуплекс:", glyph.toolTip())
 
+    def test_management_port_protection_is_visible_in_tooltip(self) -> None:
+        glyph = PortGlyph(self._port(management_port=True))
+
+        self.assertIn("Порт управления", glyph.toolTip())
+        self.assertIn("выключение защищено", glyph.toolTip())
+
     def test_hover_state_is_shared_by_ethernet_and_usb(self) -> None:
         for kind in ("ethernet", "usb"):
             glyph = PortGlyph(self._port(kind=kind))

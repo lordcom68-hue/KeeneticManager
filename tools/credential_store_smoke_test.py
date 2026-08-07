@@ -13,8 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.credential_store import RouterCredentialStore
-from core.database import Database
+from core.credential_store import RouterCredentialStore  # noqa: E402
+from core.database import Database  # noqa: E402
 
 
 class TrackingCredentialStore(RouterCredentialStore):
@@ -261,4 +261,4 @@ if __name__ == "__main__":
         )
         print(str(error), file=sys.stderr)
         traceback.print_exc()
-        raise SystemExit(1)
+        raise SystemExit(1) from error

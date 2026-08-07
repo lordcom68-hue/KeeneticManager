@@ -411,6 +411,26 @@ class InterfaceServiceTests(unittest.TestCase):
             "интерфейс отсутствует",
         )
 
+    def test_verify_enabled_does_not_confuse_missing_link_with_admin_down(self) -> None:
+        client, service = self.build_service()
+        interface_id = "FastEthernet0/1"
+        client.rci_data = {
+            "show/interface": {
+                interface_id: {
+                    "id": interface_id,
+                    "state": "down",
+                    "link": "down",
+                    "summary": {"layer": {"conf": "running"}},
+                }
+            },
+            "show/sc/interface": {interface_id: {"up": True}},
+        }
+
+        verified, state = service.verify_admin_state(interface_id, True)
+
+        self.assertTrue(verified, state)
+        self.assertIn("runtime=enabled", state)
+
     def test_normalize_statistics_walks_nested_payload(self) -> None:
         normalized = InterfaceService.normalize_statistics(
             {

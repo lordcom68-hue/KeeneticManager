@@ -26,6 +26,7 @@ from core.services.errors import (
 )
 from core.services.rci_transport import RciTransport
 from core.services.interface_service import InterfaceService
+from core.services.port_status_service import PortStatusService
 from core.services.ping_check_service import (
     PingCheckService,
 )
@@ -145,6 +146,7 @@ class KeeneticClient:
         # Интерфейсная логика вынесена в отдельный сервис.
         # KeeneticClient сохраняет старые методы как совместимый фасад.
         self.interface_service = InterfaceService(self)
+        self.port_status_service = PortStatusService(self)
         self.traffic_service = TrafficService(self)
         self.ping_check_service = PingCheckService(self)
         self.priority_service = PriorityService(self)
@@ -1247,6 +1249,19 @@ class KeeneticClient:
                 interface_config_data or {}
             ),
         )
+        management_ports = {
+            str(item.get("interface") or "").strip().casefold()
+            for item in client_inventory
+            if bool(item.get("management_client"))
+            and str(item.get("interface") or "").strip()
+        }
+        for port in ports:
+            interface_id = str(
+                port.get("interface_id") or port.get("id") or ""
+            ).strip()
+            port["management_port"] = (
+                interface_id.casefold() in management_ports
+            )
 
         return ConnectionResult(
             success=True,
@@ -11512,6 +11527,13 @@ class KeeneticClient:
         enabled: bool,
     ) -> tuple[bool, str]:
         """Совместимый фасад включения и выключения интерфейса."""
+        if self.port_status_service.PHYSICAL_PORT_PATTERN.fullmatch(
+            str(interface_id or "").strip()
+        ):
+            return self.port_status_service.set_enabled(
+                interface_id=interface_id,
+                enabled=enabled,
+            )
         return self.interface_service.set_enabled(
             interface_id=interface_id,
             enabled=enabled,

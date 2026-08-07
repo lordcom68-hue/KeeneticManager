@@ -435,6 +435,7 @@ class ClientsTab(QWidget):
         self._ports: list[dict[str, Any]] = []
         self._cards: dict[str, ClientCard] = {}
         self._port_buttons: dict[str, QPushButton] = {}
+        self._pending_port_interfaces: set[str] = set()
         self._client_orders: dict[int | None, list[str]] = {}
         self._selected_client_key: str | None = None
         self._wifi_action_pending = False
@@ -665,6 +666,7 @@ class ClientsTab(QWidget):
         self._ports = []
         self._selected_client_key = None
         self._wifi_action_pending = False
+        self._pending_port_interfaces.clear()
         for card in self._cards.values():
             self.cards_layout.removeWidget(card)
             card.deleteLater()
@@ -1285,6 +1287,10 @@ class ClientsTab(QWidget):
                 self._cards[key] = card
             else:
                 card.update_client(client)
+            interface_id = str(client.get("interface") or "").strip().casefold()
+            card.set_port_action_pending(
+                interface_id in self._pending_port_interfaces
+            )
 
         visible_keys = {
             ClientCard.make_client_key(client)
@@ -1372,10 +1378,31 @@ class ClientsTab(QWidget):
             button.setToolTip(
                 f"Включить физический порт {display_name}."
             )
+            pending = interface_id.casefold() in self._pending_port_interfaces
+            button.setEnabled(not pending)
+            if pending:
+                button.setText(f"Включение {display_name}…")
             self.disabled_ports_layout.insertWidget(index, button)
             button.show()
 
         self.disabled_ports_panel.setVisible(bool(disabled))
+
+    def set_port_action_pending(
+        self,
+        interface_ids: list[str],
+        pending: bool,
+    ) -> None:
+        normalized = {
+            str(value or "").strip().casefold()
+            for value in interface_ids
+            if str(value or "").strip()
+        }
+        if pending:
+            self._pending_port_interfaces.update(normalized)
+        else:
+            self._pending_port_interfaces.difference_update(normalized)
+        self._apply_filter()
+        self._render_disabled_ports()
 
     def _enable_disabled_port(self, checked: bool = False) -> None:
         del checked

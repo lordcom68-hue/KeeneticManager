@@ -51,6 +51,7 @@ class ClientCard(QFrame):
             else False
         )
         self._toggle_in_progress = False
+        self._port_action_pending = False
 
         self.setObjectName("wifiClientCard")
         self.setProperty("selected", False)
@@ -934,7 +935,25 @@ class ClientCard(QFrame):
             "target_enabled",
             target,
         )
+        if self._port_action_pending:
+            self.port_button.setText("Выполняется…")
+            self.port_button.setToolTip(
+                "Приложение ожидает подтверждение состояния порта."
+            )
+            self.port_button.setEnabled(False)
         self.port_button.show()
+
+    def set_port_action_pending(self, pending: bool) -> None:
+        self._port_action_pending = bool(pending)
+        self._update_port_button(
+            self.client,
+            str(
+                self.client.get("name")
+                or self.client.get("mac")
+                or "Клиент"
+            ),
+            self.client.get("connection_kind") == "wired",
+        )
 
     def _emit_port_action(
         self,

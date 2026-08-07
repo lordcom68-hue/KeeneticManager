@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = "python",
-    [int]$MinimumCoverage = 42
+    [int]$MinimumCoverage = 43
 )
 
 $ErrorActionPreference = "Stop"

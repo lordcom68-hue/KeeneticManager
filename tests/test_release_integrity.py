@@ -5,14 +5,14 @@ from pathlib import Path
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
-    def test_release_version_is_104_beta(self) -> None:
+    def test_release_version_is_105_beta(self) -> None:
         from core.app_version import (
             APP_RELEASE_STATUS,
             APP_RELEASE_TRACK,
             APP_VERSION,
         )
 
-        self.assertEqual(APP_VERSION, "1.0.4-beta")
+        self.assertEqual(APP_VERSION, "1.0.5-beta")
         self.assertEqual(APP_RELEASE_STATUS, "beta")
         self.assertEqual(APP_RELEASE_TRACK, "beta")
 
@@ -363,6 +363,29 @@ class ReleaseIntegrityTests(unittest.TestCase):
                 ),
                 f"InterfaceService не содержит {name}",
             )
+
+    def test_port_status_service_owns_safe_physical_port_mutations(self) -> None:
+        from core.services.port_status_service import (
+            PortSnapshot,
+            PortStatusService,
+        )
+
+        self.assertTrue(callable(PortSnapshot))
+        for name in (
+            "snapshot",
+            "is_management_port",
+            "set_enabled",
+            "set_enabled_result",
+        ):
+            self.assertTrue(callable(getattr(PortStatusService, name, None)), name)
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "keenetic_client.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("self.port_status_service = PortStatusService(self)", source)
+        self.assertIn("self.port_status_service.set_enabled(", source)
 
     def test_traffic_service_owns_counter_calculation(self) -> None:
         from core.services.traffic_service import TrafficSample, TrafficService

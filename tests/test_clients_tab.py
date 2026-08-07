@@ -593,6 +593,57 @@ class ClientsTabTests(unittest.TestCase):
         finally:
             tab.close()
 
+    def test_port_controls_stay_disabled_while_confirmation_is_pending(self) -> None:
+        tab = ClientsTab()
+        try:
+            tab.set_clients(
+                [
+                    {
+                        "mac": "00:00:00:00:00:45",
+                        "name": "Desktop",
+                        "connection_kind": "wired",
+                        "online": True,
+                        "interface": "GigabitEthernet0/2",
+                        "interface_enabled": True,
+                    }
+                ]
+            )
+            card = next(iter(tab._cards.values()))
+
+            tab.set_port_action_pending(["GigabitEthernet0/2"], True)
+
+            self.assertFalse(card.port_button.isEnabled())
+            self.assertEqual(card.port_button.text(), "Выполняется…")
+
+            tab.set_port_action_pending(["GigabitEthernet0/2"], False)
+
+            self.assertTrue(card.port_button.isEnabled())
+            self.assertEqual(card.port_button.text(), "Выключить порт")
+        finally:
+            tab.close()
+
+    def test_disabled_port_recovery_button_shows_pending_state(self) -> None:
+        tab = ClientsTab()
+        try:
+            tab.set_ports(
+                [
+                    {
+                        "id": "FastEthernet0/1",
+                        "kind": "ethernet",
+                        "physical_name": "LAN 2",
+                        "enabled": False,
+                    }
+                ]
+            )
+
+            tab.set_port_action_pending(["FastEthernet0/1"], True)
+            button = tab._port_buttons["FastEthernet0/1"]
+
+            self.assertFalse(button.isEnabled())
+            self.assertEqual(button.text(), "Включение LAN2…")
+        finally:
+            tab.close()
+
     def test_unknown_badge_and_last_seen_are_readable(self) -> None:
         card = ClientCard(
             {
