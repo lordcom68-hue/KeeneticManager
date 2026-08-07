@@ -71,12 +71,11 @@ class PortStatusService:
         )
         runtime_enabled = interface_service.runtime_admin_state(runtime_item)
         config_enabled = interface_service.config_admin_state(config_item)
-        known = [
-            value
-            for value in (runtime_enabled, config_enabled)
-            if value is not None
-        ]
-        enabled = known[0] if known and len(set(known)) == 1 else None
+        enabled = (
+            runtime_enabled
+            if runtime_enabled is not None
+            else config_enabled
+        )
         exists = bool(
             port is not None
             or (

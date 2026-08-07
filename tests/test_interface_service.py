@@ -431,6 +431,27 @@ class InterfaceServiceTests(unittest.TestCase):
         self.assertTrue(verified, state)
         self.assertIn("runtime=enabled", state)
 
+    def test_duplicate_port_prefers_runtime_copy_with_admin_summary(self) -> None:
+        interface_id = "GigabitEthernet0/2"
+        nested_copy = {
+            "id": interface_id,
+            "type": "Port",
+            "link": "down",
+        }
+        complete_copy = {
+            **nested_copy,
+            "summary": {"layer": {"conf": "disabled"}},
+        }
+        data = {
+            "GigabitEthernet0": {"port": {"3": nested_copy}},
+            "3": complete_copy,
+        }
+
+        found = InterfaceService.find_interface_item(data, interface_id)
+
+        self.assertIs(found, complete_copy)
+        self.assertFalse(InterfaceService.runtime_admin_state(found))
+
     def test_normalize_statistics_walks_nested_payload(self) -> None:
         normalized = InterfaceService.normalize_statistics(
             {

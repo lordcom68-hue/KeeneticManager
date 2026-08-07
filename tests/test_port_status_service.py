@@ -253,7 +253,7 @@ class PortStatusServiceTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertIn("откат", result.message)
 
-    def test_conflicting_runtime_and_config_state_blocks_mutation(self) -> None:
+    def test_runtime_state_wins_over_stale_saved_config(self) -> None:
         interface_id = "GigabitEthernet0/2"
         client = FakeClient(
             physical_port(interface_id, conf="disabled", link="down"),
@@ -262,8 +262,8 @@ class PortStatusServiceTests(unittest.TestCase):
 
         result = PortStatusService(client).set_enabled_result(interface_id, False)
 
-        self.assertEqual(result.state, OperationState.REJECTED)
-        self.assertIn("административное состояние", result.message)
+        self.assertEqual(result.state, OperationState.CONFIRMED)
+        self.assertTrue(result.details["unchanged"])
         self.assertEqual(client.interface_service.mutations, [])
 
     def test_logical_interface_cannot_enter_physical_port_path(self) -> None:

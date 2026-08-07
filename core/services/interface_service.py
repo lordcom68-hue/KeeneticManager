@@ -136,31 +136,54 @@ class InterfaceService:
         if not name:
             return None
 
-        def walk(value: Any) -> dict[str, Any] | None:
+        candidates: list[tuple[int, int, dict[str, Any]]] = []
+        sequence = 0
+
+        def richness(item: dict[str, Any]) -> int:
+            score = 0
+            summary = item.get("summary")
+            if isinstance(summary, dict):
+                layer = summary.get("layer")
+                if isinstance(layer, dict) and "conf" in layer:
+                    score += 30
+            if "up" in item or "down" in item:
+                score += 20
+            if "state" in item:
+                score += 5
+            if str(item.get("type") or "").lower() == "port":
+                score += 1
+            return score
+
+        def add(item: dict[str, Any], base_score: int, depth: int) -> None:
+            nonlocal sequence
+            sequence += 1
+            candidates.append(
+                (base_score + richness(item) - depth, sequence, item)
+            )
+
+        def walk(value: Any, depth: int = 0) -> None:
             if isinstance(value, dict):
                 item_id = str(value.get("id") or "").strip().casefold()
                 if item_id == name:
-                    return value
+                    add(value, 100, depth)
 
                 for key, child in value.items():
                     if (
                         str(key).strip().casefold() == name
                         and isinstance(child, dict)
                     ):
-                        return child
+                        add(child, 200, depth)
 
                 for child in value.values():
-                    found = walk(child)
-                    if found is not None:
-                        return found
+                    walk(child, depth + 1)
             elif isinstance(value, list):
                 for child in value:
-                    found = walk(child)
-                    if found is not None:
-                        return found
-            return None
+                    walk(child, depth + 1)
 
-        return walk(data)
+        walk(data)
+        if not candidates:
+            return None
+        return max(candidates, key=lambda candidate: candidate[:2])[2]
 
     @staticmethod
     def runtime_admin_state(
@@ -525,11 +548,6 @@ class InterfaceService:
             )
             runtime_enabled = self.runtime_admin_state(runtime_item)
             config_enabled = self.config_admin_state(config_item)
-            known_states = [
-                value
-                for value in (runtime_enabled, config_enabled)
-                if value is not None
-            ]
 
             last_state = (
                 "runtime="
@@ -544,8 +562,12 @@ class InterfaceService:
                 )
             )
 
-            if known_states and all(
-                value == expected_enabled for value in known_states
+            if runtime_enabled == expected_enabled:
+                return True, last_state
+
+            if (
+                runtime_enabled is None
+                and config_enabled == expected_enabled
             ):
                 return True, last_state
 
