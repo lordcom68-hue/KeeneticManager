@@ -13,7 +13,7 @@ cd D:\Proekt\KeeneticManager
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt -c constraints-release.txt
 python main.py
 ```
 
@@ -110,7 +110,7 @@ SHA-256 и помечает внешние данные как импортир�
 ## Проверка проекта
 
 ```powershell
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt -c constraints-release.txt
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\quality_check.ps1
 ```
 
@@ -131,7 +131,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build_patch.ps1
 ## Сборка Windows-приложения
 
 ```powershell
-python -m pip install -r requirements.txt -r requirements-build.txt
+python -m pip install -r requirements.txt -r requirements-build.txt -c constraints-release.txt
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build_release.ps1
 ```
 

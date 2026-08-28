@@ -1,0 +1,36 @@
+# Reproducible dependency set validated for Keenetic Manager on Windows
+# with CPython 3.14. Update intentionally after a full quality and release run.
+PySide6==6.11.1
+PySide6_Addons==6.11.1
+PySide6_Essentials==6.11.1
+shiboken6==6.11.1
+
+requests==2.34.2
+certifi==2026.7.22
+charset-normalizer==3.4.9
+idna==3.18
+urllib3==2.7.0
+
+keyring==25.7.0
+jaraco.classes==3.4.0
+jaraco.context==6.1.2
+jaraco.functools==4.6.0
+more-itertools==11.1.0
+pywin32-ctypes==0.2.3
+
+smbprotocol==1.17.0
+cryptography==50.0.0
+cffi==2.1.0
+pycparser==3.0
+pyspnego==0.12.1
+sspilib==0.5.0
+
+PyInstaller==6.21.0
+altgraph==0.17.5
+packaging==26.3
+pefile==2024.8.26
+pyinstaller-hooks-contrib==2026.6
+setuptools==83.0.0
+
+coverage==7.15.4
+ruff==0.16.1

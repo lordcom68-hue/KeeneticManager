@@ -54,6 +54,7 @@ $rootFiles = @(
     "main.py",
     "requirements.txt",
     "requirements-build.txt",
+    "constraints-release.txt",
     "pyproject.toml",
     "KeeneticManager.spec",
     "BUILD.md"
