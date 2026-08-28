@@ -4161,6 +4161,26 @@ class WiFiNetworkServiceTests(unittest.TestCase):
 
 
 class SourceBoundaryTests(unittest.TestCase):
+    def test_read_model_is_physically_separated_from_mutations(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "core" / "services"
+        service_path = root / "wifi_network_service.py"
+        read_path = root / "wifi_network_read_service.py"
+        models_path = root / "wifi_network_models.py"
+        service_source = service_path.read_text(encoding="utf-8")
+        read_source = read_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "class WiFiNetworkService(WifiNetworkReadMixin):",
+            service_source,
+        )
+        self.assertNotIn("def build_networks(", service_source)
+        self.assertIn("class WifiNetworkReadMixin:", read_source)
+        self.assertIn("def build_networks(", read_source)
+        self.assertIn("def _reconcile_logical_networks(", read_source)
+        self.assertLess(len(service_source.splitlines()), 4000)
+        self.assertGreater(len(read_source.splitlines()), 1400)
+        self.assertTrue(models_path.is_file())
+
     def test_client_constructs_service_and_uses_it_for_refresh(self) -> None:
         client_source = (
             Path(__file__).resolve().parents[1]

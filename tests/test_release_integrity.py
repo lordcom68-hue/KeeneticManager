@@ -580,14 +580,17 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertNotIn("delta * 8.0 / elapsed", source)
         self.assertNotIn("delta * 8.0 / elapsed", details_source)
 
-        wifi_source = (
+        wifi_read_source = (
             Path(__file__).resolve().parents[1]
             / "core"
             / "services"
-            / "wifi_network_service.py"
+            / "wifi_network_read_service.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("traffic_service.calculate_counter_speeds(", wifi_source)
-        self.assertNotIn("rx_delta * 8.0", wifi_source)
+        self.assertIn(
+            "traffic_service.calculate_counter_speeds(",
+            wifi_read_source,
+        )
+        self.assertNotIn("rx_delta * 8.0", wifi_read_source)
 
     def test_usb_service_owns_optional_usb_rci_detection(self) -> None:
         from core.services.usb_service import UsbService
