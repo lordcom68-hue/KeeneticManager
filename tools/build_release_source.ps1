@@ -67,6 +67,7 @@ $runtimeDirectories = @(
 )
 $toolFiles = @(
     "tools\build_release.ps1",
+    "tools\sign_windows_binary.ps1",
     "tools\verify_release.ps1",
     "tools\verify_upgrade.ps1",
     "tools\upgrade_fixture.py"

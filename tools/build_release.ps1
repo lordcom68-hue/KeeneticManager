@@ -3,7 +3,10 @@ param(
     [string]$Python = "python",
     [switch]$SkipInstaller,
     [switch]$SkipQualityChecks,
-    [switch]$SkipReleaseVerification
+    [switch]$SkipReleaseVerification,
+    [switch]$SignArtifacts,
+    [string]$SigningThumbprint = $env:KEENETIC_MANAGER_SIGNING_THUMBPRINT,
+    [string]$TimestampUrl = $env:KEENETIC_MANAGER_TIMESTAMP_URL
 )
 
 $ErrorActionPreference = "Stop"
@@ -70,6 +73,20 @@ try {
 
     Write-Host "Windows-приложение создано: $applicationExe" -ForegroundColor Green
 
+    if ($SignArtifacts) {
+        if ([string]::IsNullOrWhiteSpace($SigningThumbprint)) {
+            throw (
+                "Для подписи укажите -SigningThumbprint или переменную " +
+                "KEENETIC_MANAGER_SIGNING_THUMBPRINT."
+            )
+        }
+        $signScript = Join-Path $projectRoot "tools\sign_windows_binary.ps1"
+        & $signScript `
+            -FilePath $applicationExe `
+            -CertificateThumbprint $SigningThumbprint `
+            -TimestampUrl $TimestampUrl
+    }
+
     if (-not $SkipInstaller) {
         $innoCandidates = @(
             (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
@@ -96,6 +113,19 @@ try {
                 "Установщик создан в: " +
                 (Join-Path $distRoot "installer")
             ) -ForegroundColor Green
+
+            if ($SignArtifacts) {
+                $installerExe = Join-Path (
+                    Join-Path $distRoot "installer"
+                ) "KeeneticManager-$version-Setup.exe"
+                if (-not (Test-Path -LiteralPath $installerExe -PathType Leaf)) {
+                    throw "Не найден установщик для подписи: $installerExe"
+                }
+                & $signScript `
+                    -FilePath $installerExe `
+                    -CertificateThumbprint $SigningThumbprint `
+                    -TimestampUrl $TimestampUrl
+            }
         }
     }
 

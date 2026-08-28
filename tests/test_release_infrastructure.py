@@ -62,6 +62,22 @@ class ReleaseInfrastructureTests(unittest.TestCase):
             self.root / "tools" / "build_release_source.ps1"
         ).read_text(encoding="utf-8")
         self.assertIn('"constraints-release.txt"', script)
+        self.assertIn('"tools\\sign_windows_binary.ps1"', script)
+
+    def test_release_signing_is_explicit_and_verified(self) -> None:
+        build_script = (
+            self.root / "tools" / "build_release.ps1"
+        ).read_text(encoding="utf-8")
+        sign_script = (
+            self.root / "tools" / "sign_windows_binary.ps1"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("[switch]$SignArtifacts", build_script)
+        self.assertIn("KEENETIC_MANAGER_SIGNING_THUMBPRINT", build_script)
+        self.assertIn("-CertificateThumbprint $SigningThumbprint", build_script)
+        self.assertIn('"/fd", "SHA256"', sign_script)
+        self.assertIn('& $signTool "verify" "/pa" "/v"', sign_script)
+        self.assertIn("signtool.exe не найден", sign_script)
 
 
 if __name__ == "__main__":
