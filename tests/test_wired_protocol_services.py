@@ -112,6 +112,33 @@ class CreationRollbackClient:
         return True, "порт восстановлен"
 
 
+class DeletionInspectionClient:
+    def __init__(self) -> None:
+        self.session = object()
+        self.base_url = "http://192.0.2.1"
+        self.inspect_calls: list[tuple[str, str]] = []
+
+    @staticmethod
+    def get_rci_data(*, endpoint: str, required: bool) -> dict[str, Any]:
+        del required
+        if endpoint == "show/sc/interface":
+            return {"ISP": {}}
+        return {}
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("inspect_wired_") and name.endswith("_deletion"):
+            protocol = name.removeprefix("inspect_wired_").removesuffix(
+                "_deletion"
+            )
+
+            def inspect(*, interface_id: str, **_kwargs: Any):
+                self.inspect_calls.append((protocol, interface_id))
+                return None, ""
+
+            return inspect
+        raise AttributeError(name)
+
+
 class WiredProtocolServiceTests(unittest.TestCase):
     SERVICES = (
         (WiredPppoeService, "pppoe"),
@@ -169,6 +196,53 @@ class WiredProtocolServiceTests(unittest.TestCase):
                 )
                 self.assertEqual(rollback["old_priorities"], {"ISP": 0})
 
+    def test_shared_delete_routes_to_protocol_specific_inspection(self) -> None:
+        for service_type, protocol in self.SERVICES:
+            with self.subTest(protocol=protocol):
+                client = DeletionInspectionClient()
+                service = service_type(client)
+                delete = getattr(service, f"delete_wired_{protocol}")
+
+                success, message, details = delete(f"{protocol.upper()}0")
+
+                self.assertFalse(success)
+                self.assertEqual(details, {})
+                self.assertIn(protocol.upper(), message.upper())
+                self.assertEqual(
+                    client.inspect_calls,
+                    [(protocol, f"{protocol.upper()}0")],
+                )
+
+    def test_peer_tunnels_keep_protocol_specific_mtu_limits(self) -> None:
+        cases = (
+            (WiredPptpService, "pptp", 1493, 1492),
+            (WiredL2tpService, "l2tp", 1501, 1500),
+        )
+        for service_type, protocol, invalid_mtu, maximum in cases:
+            with self.subTest(protocol=protocol):
+                client = CreationRollbackClient()
+                create = getattr(
+                    service_type(client),
+                    f"create_wired_{protocol}",
+                )
+                success, message, details = create(
+                    {
+                        "protocol": {
+                            "username": "user",
+                            "password": "secret",
+                            "server": "vpn.example",
+                            "mtu": invalid_mtu,
+                        }
+                    }
+                )
+
+                self.assertFalse(success)
+                self.assertEqual(details, {})
+                self.assertEqual(
+                    message,
+                    f"MTU {protocol.upper()} должен быть от 576 до {maximum}.",
+                )
+
 
 class WiredServiceFacadeTests(unittest.TestCase):
     def test_wired_service_delegates_all_protocol_operations(self) -> None:
@@ -218,7 +292,7 @@ class SourceBoundaryTests(unittest.TestCase):
         )
         return int(method.end_lineno) - int(method.lineno) + 1
 
-    def test_protocol_operations_are_physically_separated(self) -> None:
+    def test_protocol_operations_share_focused_lifecycle_implementations(self) -> None:
         root = Path(__file__).resolve().parents[1]
         wired = root / "core" / "services" / "wired_internet_service.py"
         services = (
@@ -229,12 +303,17 @@ class SourceBoundaryTests(unittest.TestCase):
 
         for protocol, class_name, filename in services:
             path = root / "core" / "services" / filename
-            for action, minimum in (("create", 500), ("delete", 250)):
+            for action in ("create", "delete"):
                 method_name = f"{action}_wired_{protocol}"
                 with self.subTest(protocol=protocol, action=action):
-                    self.assertGreater(
+                    expected_maximum = (
+                        600
+                        if protocol == "pppoe" and action == "create"
+                        else 15
+                    )
+                    self.assertLess(
                         self.method_span(path, class_name, method_name),
-                        minimum,
+                        expected_maximum,
                     )
                     self.assertLess(
                         self.method_span(
@@ -244,6 +323,29 @@ class SourceBoundaryTests(unittest.TestCase):
                         ),
                         15,
                     )
+
+        shared_peer = (
+            root / "core" / "services" / "wired_peer_tunnel_service.py"
+        )
+        shared_base = (
+            root / "core" / "services" / "wired_protocol_service_base.py"
+        )
+        self.assertGreater(
+            self.method_span(
+                shared_peer,
+                "WiredPeerTunnelService",
+                "_create_wired_peer_tunnel",
+            ),
+            500,
+        )
+        self.assertGreater(
+            self.method_span(
+                shared_base,
+                "WiredProtocolServiceBase",
+                "_delete_wired_protocol",
+            ),
+            250,
+        )
 
     def test_protocol_sources_have_equivalent_public_contracts(self) -> None:
         expected = {
