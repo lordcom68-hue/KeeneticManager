@@ -67,6 +67,35 @@ class UiModuleBoundaryTests(unittest.TestCase):
         )
         self.assertLess(len(tab_source.splitlines()), 4000)
 
+    def test_internet_actions_are_owned_by_controller(self) -> None:
+        main_window = self.root / "ui" / "main_window.py"
+        controller = (
+            self.root
+            / "ui"
+            / "controllers"
+            / "internet_actions_controller.py"
+        )
+        method_names = (
+            "open_connection_creation",
+            "change_cable_connection_protocol",
+            "delete_internet_connection",
+            "change_connection_interface_settings",
+        )
+
+        for method_name in method_names:
+            self.assertLessEqual(
+                self.method_span(main_window, "MainWindow", method_name),
+                15,
+            )
+            self.assertGreater(
+                self.method_span(
+                    controller,
+                    "InternetActionsController",
+                    method_name,
+                ),
+                100,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
