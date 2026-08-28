@@ -122,6 +122,9 @@ class OperationHistoryService:
                     "level_label": self.LEVEL_LABELS[level],
                     "source": self._source_label(event),
                     "message": self._journal_message(event, safe_details),
+                    "operation_type": str(
+                        event.get("type") or "operation"
+                    ),
                     "operation_state": state,
                     "application_event": True,
                 }
@@ -146,8 +149,19 @@ class OperationHistoryService:
 
     @staticmethod
     def _source_label(event: dict[str, Any]) -> str:
-        if str(event.get("type") or "") == "ethernet_port_state":
-            return "Keenetic Manager · Ethernet"
+        event_type = str(event.get("type") or "")
+        suffix = {
+            "ethernet_port_state": "Ethernet",
+            "interface_state": "Интернет",
+            "wifi_network": "Wi-Fi",
+            "wifi_client_access": "Клиенты",
+            "rescue_mode": "Режим",
+            "wired_connection": "Интернет",
+            "cable_protocol_change": "Протокол",
+            "dedicated_wan": "Dedicated WAN",
+        }.get(event_type)
+        if suffix:
+            return f"Keenetic Manager · {suffix}"
         return "Keenetic Manager"
 
     @staticmethod
@@ -155,6 +169,49 @@ class OperationHistoryService:
         event: dict[str, Any],
         details: dict[str, Any],
     ) -> str:
+        event_type = str(event.get("type") or "operation")
+        message = str(event.get("message") or "").strip()
+        if event_type != "ethernet_port_state":
+            operation = str(details.get("operation") or "").strip()
+            display_name = str(
+                details.get("display_name")
+                or details.get("interface_id")
+                or ""
+            ).strip()
+            prefix = {
+                "interface_state": (
+                    "Включение подключения"
+                    if details.get("requested_enabled") is True
+                    else "Выключение подключения"
+                    if details.get("requested_enabled") is False
+                    else "Изменение подключения"
+                ),
+                "wifi_network": {
+                    "create": "Создание Wi-Fi сети",
+                    "update": "Изменение Wi-Fi сети",
+                    "state": "Переключение Wi-Fi сети",
+                    "delete": "Удаление Wi-Fi сети",
+                }.get(operation, "Изменение Wi-Fi сети"),
+                "wifi_client_access": (
+                    "Разрешение доступа Wi-Fi клиента"
+                    if details.get("allowed") is True
+                    else "Отключение Wi-Fi клиента"
+                ),
+                "rescue_mode": "Переключение режима работы",
+                "wired_connection": "Создание проводного подключения",
+                "cable_protocol_change": "Смена протокола подключения",
+                "dedicated_wan": (
+                    "Создание Dedicated WAN"
+                    if operation == "create"
+                    else "Удаление Dedicated WAN"
+                    if operation == "delete"
+                    else "Изменение Dedicated WAN"
+                ),
+            }.get(event_type, "Операция")
+            if display_name:
+                prefix += f" «{display_name}»"
+            return f"{prefix}: {message}" if message else prefix
+
         interface_id = str(details.get("interface_id") or "").strip()
         display_name = str(
             details.get("display_name") or interface_id or "Порт"
@@ -170,5 +227,4 @@ class OperationHistoryService:
         target = display_name
         if interface_id and interface_id != display_name:
             target += f" ({interface_id})"
-        message = str(event.get("message") or "").strip()
         return f"{action} {target}: {message}" if message else f"{action} {target}"

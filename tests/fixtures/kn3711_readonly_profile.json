@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-08-16",
+  "capture_source": "read_only_real_router",
+  "privacy": {
+    "anonymized": true,
+    "contains_credentials": false,
+    "contains_addresses": false,
+    "contains_ssids": false,
+    "contains_client_identifiers": false,
+    "configuration_changed": false
+  },
+  "router": {
+    "model": "Sprinter (KN-3711)",
+    "version": "5.01.C.1.0-0",
+    "connection_scheme": "http"
+  },
+  "observed_counts": {
+    "internet_connections": 2,
+    "wifi_networks": 2,
+    "clients": 11,
+    "ports": 4
+  },
+  "features": {
+    "monitoring": "supported",
+    "internet_management": "supported",
+    "wifi_monitoring": "supported",
+    "wifi_management": "supported",
+    "client_access": "supported",
+    "ethernet_ports": "supported",
+    "rescue_mode": "supported",
+    "system_log": "supported",
+    "diagnostics": "supported",
+    "usb_storage": "unavailable",
+    "vpn": "supported"
+  }
+}

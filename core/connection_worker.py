@@ -11,6 +11,8 @@ from core.keenetic_client import (
     KeeneticClient,
 )
 from core.services.reachability import ReachabilityTracker
+from core.services.crash_report_service import report_background_exception
+from core.services.router_self_check_service import RouterSelfCheckService
 
 
 class RouterMonitor(QThread):
@@ -106,6 +108,13 @@ class RouterMonitor(QThread):
         str,
     )
     system_log_completed = Signal(
+        int,
+        bool,
+        str,
+        object,
+    )
+    router_self_check_progress = Signal(int, int, str)
+    router_self_check_completed = Signal(
         int,
         bool,
         str,
@@ -242,15 +251,36 @@ class RouterMonitor(QThread):
         return result
 
     def run(self) -> None:
-        client = KeeneticClient(
-            username=self.router.get(
-                "username"
-            ) or "",
-            password=self.router.get(
-                "password"
-            ) or "",
-            router_id=self.router_id,
-        )
+        try:
+            client = KeeneticClient(
+                username=self.router.get(
+                    "username"
+                ) or "",
+                password=self.router.get(
+                    "password"
+                ) or "",
+                router_id=self.router_id,
+            )
+        except Exception as error:
+            report_background_exception(
+                "router_monitor.initialize",
+                error,
+                details={"router_id": self.router_id},
+            )
+            self.updated.emit(
+                self.router_id,
+                ConnectionResult(
+                    success=False,
+                    message=(
+                        "Не удалось запустить мониторинг. "
+                        "Подробности сохранены в диагностике."
+                    ),
+                    connection_state="internal_error",
+                    failure_kind="internal",
+                ),
+            )
+            self.monitor_stopped.emit(self.router_id)
+            return
 
         first_cycle = True
 
@@ -326,6 +356,11 @@ class RouterMonitor(QThread):
                     # Ошибка обычного цикла обновления не должна
                     # уничтожать QThread. Закрываем клиент и даём
                     # следующему циклу выполнить переподключение.
+                    report_background_exception(
+                        "router_monitor.refresh",
+                        error,
+                        details={"router_id": self.router_id},
+                    )
                     result = ConnectionResult(
                         success=False,
                         message=(
@@ -371,6 +406,25 @@ class RouterMonitor(QThread):
                     self.next_cycle_delay_ms(result) / 1000
                 )
 
+        except Exception as error:
+            report_background_exception(
+                "router_monitor.run",
+                error,
+                details={"router_id": self.router_id},
+            )
+            if self.is_running():
+                self.updated.emit(
+                    self.router_id,
+                    ConnectionResult(
+                        success=False,
+                        message=(
+                            "Мониторинг остановлен из-за внутренней ошибки. "
+                            "Подробности сохранены в диагностике."
+                        ),
+                        connection_state="internal_error",
+                        failure_kind="internal",
+                    ),
+                )
         finally:
             client.close()
             self.monitor_stopped.emit(
@@ -618,6 +672,15 @@ class RouterMonitor(QThread):
             int(max_lines),
         )
 
+    def request_router_self_check(
+        self,
+        check_keys: tuple[str, ...] | list[str] | None = None,
+    ) -> None:
+        self._put_action(
+            "router_self_check",
+            tuple(str(key) for key in (check_keys or ())) or None,
+        )
+
     def request_clear_diagnostics(self) -> None:
         self._put_action(
             "clear_diagnostics",
@@ -642,9 +705,11 @@ class RouterMonitor(QThread):
         Выполняет все накопленные действия и обновляет интерфейс
         один раз после всего пакета команд.
 
-        Возвращает True, если свежий снимок уже был отправлен.
+        Возвращает True, если пакет действий обработан и текущему циклу
+        не требуется выполнять ещё одно обычное автообновление.
         """
         refresh_required = False
+        action_processed = False
 
         while self.is_running():
             try:
@@ -654,6 +719,7 @@ class RouterMonitor(QThread):
             except queue.Empty:
                 break
 
+            action_processed = True
             try:
                 refresh_required = (
                     self.process_action(
@@ -664,7 +730,16 @@ class RouterMonitor(QThread):
                     or refresh_required
                 )
             except Exception as error:
+                report_background_exception(
+                    "router_monitor.action",
+                    error,
+                    details={
+                        "router_id": self.router_id,
+                        "action_type": action_type,
+                    },
+                )
                 self.emit_action_failure(
+                    client=client,
                     action_type=action_type,
                     payload=payload,
                     error=error,
@@ -681,7 +756,7 @@ class RouterMonitor(QThread):
             self.consume_refresh_request()
             return True
 
-        return False
+        return action_processed and not self.has_refresh_request()
 
     def process_action(
         self,
@@ -704,6 +779,17 @@ class RouterMonitor(QThread):
                     interface_id=str(interface_id),
                     enabled=bool(enabled),
                 )
+            )
+            self._record_operation(
+                client,
+                "interface_state",
+                message,
+                success=success,
+                details={
+                    "interface_id": str(interface_id),
+                    "display_name": str(interface_id),
+                    "requested_enabled": bool(enabled),
+                },
             )
             self.interface_action_completed.emit(
                 self.router_id,
@@ -753,6 +839,47 @@ class RouterMonitor(QThread):
             ).strip().lower()
             success, message, details = (
                 client.wired_internet_service.create_cable_internet(settings)
+            )
+            dedicated_wan = bool(
+                isinstance(details, dict)
+                and details.get("dedicated_wan")
+            ) or str(settings.get("mode") or "") == "dedicated_wan"
+            event_type = (
+                "dedicated_wan"
+                if dedicated_wan
+                else "wired_connection"
+            )
+            event_details = {
+                "operation": "create",
+                "display_name": self._safe_display_name(
+                    details,
+                    settings,
+                ),
+                "protocol": protocol,
+                "mode": str(settings.get("mode") or ""),
+                "interface_id": str(
+                    details.get("interface_id") or ""
+                ) if isinstance(details, dict) else "",
+                "transport_interface_id": str(
+                    details.get("transport_interface_id") or ""
+                ) if isinstance(details, dict) else "",
+            }
+            self._record_operation(
+                client,
+                event_type,
+                message,
+                success=success,
+                details=event_details,
+                result_details=details,
+            )
+            self._record_diagnostic_event(
+                client,
+                event_type,
+                message,
+                endpoint="internet/cable/create",
+                success=success,
+                details=event_details,
+                result_details=details,
             )
             connection_type = {
                 "pppoe": "ethernet.pppoe",
@@ -819,6 +946,20 @@ class RouterMonitor(QThread):
                     dict(payload)
                 )
             )
+            self._record_operation(
+                client,
+                "wifi_network",
+                message,
+                success=success,
+                details={
+                    "operation": "create",
+                    "display_name": self._safe_display_name(
+                        details,
+                        payload,
+                    ),
+                },
+                result_details=details,
+            )
             self.wifi_network_action_completed.emit(
                 self.router_id,
                 "create",
@@ -835,6 +976,20 @@ class RouterMonitor(QThread):
                     list(interface_ids),
                     dict(settings),
                 )
+            )
+            self._record_operation(
+                client,
+                "wifi_network",
+                message,
+                success=success,
+                details={
+                    "operation": "update",
+                    "display_name": self._safe_display_name(
+                        details,
+                        settings,
+                    ),
+                },
+                result_details=details,
             )
             self.wifi_network_action_completed.emit(
                 self.router_id,
@@ -853,6 +1008,21 @@ class RouterMonitor(QThread):
                     bool(enabled),
                 )
             )
+            self._record_operation(
+                client,
+                "wifi_network",
+                message,
+                success=success,
+                details={
+                    "operation": "state",
+                    "display_name": self._safe_display_name(
+                        details,
+                        network_reference,
+                    ),
+                    "requested_enabled": bool(enabled),
+                },
+                result_details=details,
+            )
             self.wifi_network_action_completed.emit(
                 self.router_id,
                 "state",
@@ -870,6 +1040,20 @@ class RouterMonitor(QThread):
                     dict(context),
                 )
             )
+            self._record_operation(
+                client,
+                "rescue_mode",
+                message,
+                success=success,
+                details={
+                    "operation": str(mode),
+                    "display_name": {
+                        "rescuer": "Спасатель",
+                        "rescued": "Спасаемый",
+                    }.get(str(mode), str(mode)),
+                },
+                result_details=details,
+            )
             self.rescue_mode_action_completed.emit(
                 self.router_id,
                 str(mode),
@@ -882,6 +1066,20 @@ class RouterMonitor(QThread):
         if action_type == "delete_wifi_network":
             success, message, details = (
                 client.wifi_network_service.delete_network(payload)
+            )
+            self._record_operation(
+                client,
+                "wifi_network",
+                message,
+                success=success,
+                details={
+                    "operation": "delete",
+                    "display_name": self._safe_display_name(
+                        details,
+                        payload,
+                    ),
+                },
+                result_details=details,
             )
             self.wifi_network_action_completed.emit(
                 self.router_id,
@@ -900,6 +1098,20 @@ class RouterMonitor(QThread):
                     allowed=bool(allowed),
                 )
             )
+            self._record_operation(
+                client,
+                "wifi_client_access",
+                message,
+                success=success,
+                details={
+                    "display_name": self._safe_display_name(
+                        details,
+                        client_reference,
+                    ),
+                    "allowed": bool(allowed),
+                },
+                result_details=details,
+            )
             self.wifi_client_access_completed.emit(
                 self.router_id,
                 str(client_reference.get("mac") or ""),
@@ -917,6 +1129,46 @@ class RouterMonitor(QThread):
                     settings=dict(settings),
                 )
             )
+            event_details = {
+                "operation": "change_protocol",
+                "display_name": str(interface_id),
+                "source_interface_id": str(interface_id),
+                "target_interface_id": str(
+                    details.get("interface_id") or ""
+                ) if isinstance(details, dict) else "",
+                "old_protocol": str(
+                    details.get("old_protocol") or ""
+                ) if isinstance(details, dict) else "",
+                "target_protocol": str(
+                    settings.get("target_protocol") or "none"
+                ).strip().lower(),
+                "rollback_success": bool(
+                    details.get("rollback_success")
+                ) if isinstance(details, dict) else False,
+                "partial_success": bool(
+                    details.get("partial_success")
+                ) if isinstance(details, dict) else False,
+                "transient_recovered": bool(
+                    details.get("transient_recovered")
+                ) if isinstance(details, dict) else False,
+            }
+            self._record_operation(
+                client,
+                "cable_protocol_change",
+                message,
+                success=success,
+                details=event_details,
+                result_details=details,
+            )
+            self._record_diagnostic_event(
+                client,
+                "cable_protocol_change",
+                message,
+                endpoint="internet/cable/protocol",
+                success=success,
+                details=event_details,
+                result_details=details,
+            )
             self.connection_protocol_change_completed.emit(
                 self.router_id,
                 str(interface_id),
@@ -932,6 +1184,40 @@ class RouterMonitor(QThread):
                 client.wired_internet_service.delete_dedicated_wan(
                     interface_id=interface_id,
                 )
+            )
+            event_details = {
+                "operation": "delete",
+                "display_name": self._safe_display_name(
+                    details,
+                    interface_id,
+                ),
+                "interface_id": interface_id,
+                "transport_interface_id": str(
+                    details.get("transport_interface_id") or ""
+                ) if isinstance(details, dict) else "",
+                "bridge_id": str(details.get("bridge_id") or "")
+                if isinstance(details, dict)
+                else "",
+                "rollback_success": bool(
+                    details.get("rollback_success")
+                ) if isinstance(details, dict) else False,
+            }
+            self._record_operation(
+                client,
+                "dedicated_wan",
+                message,
+                success=success,
+                details=event_details,
+                result_details=details,
+            )
+            self._record_diagnostic_event(
+                client,
+                "dedicated_wan",
+                message,
+                endpoint="internet/dedicated-wan/delete",
+                success=success,
+                details=event_details,
+                result_details=details,
             )
             self.connection_delete_completed.emit(
                 self.router_id,
@@ -1079,6 +1365,41 @@ class RouterMonitor(QThread):
             )
             return False
 
+        if action_type == "router_self_check":
+            router = self.router_snapshot()
+            service = RouterSelfCheckService(
+                client,
+                router_id=self.router_id,
+            )
+            result = service.run(
+                local_ip=router.get("local_ip"),
+                keendns=router.get("keendns"),
+                progress=lambda value, message: (
+                    self.router_self_check_progress.emit(
+                        self.router_id,
+                        int(value),
+                        str(message),
+                    )
+                ),
+                cancelled=lambda: not self.is_running(),
+                check_keys=(
+                    set(payload)
+                    if isinstance(payload, (tuple, list, set))
+                    else None
+                ),
+            )
+            snapshot = getattr(service, "last_refresh_result", None)
+            if isinstance(snapshot, ConnectionResult):
+                snapshot = self.apply_reachability_state(snapshot, client)
+                self.updated.emit(self.router_id, snapshot)
+            self.router_self_check_completed.emit(
+                self.router_id,
+                True,
+                result.overall_label,
+                result,
+            )
+            return False
+
         if action_type == "clear_diagnostics":
             client.clear_diagnostics()
             self.diagnostic_action_completed.emit(
@@ -1096,6 +1417,7 @@ class RouterMonitor(QThread):
     def emit_action_failure(
         self,
         *,
+        client: KeeneticClient | None = None,
         action_type: str,
         payload: object,
         error: Exception,
@@ -1103,6 +1425,12 @@ class RouterMonitor(QThread):
         message = (
             "Операция не выполнена из-за "
             f"непредвиденной ошибки: {error}"
+        )
+        self._record_unexpected_failure(
+            client,
+            action_type,
+            payload,
+            message,
         )
 
         if action_type == "interface_state":
@@ -1321,6 +1649,15 @@ class RouterMonitor(QThread):
             )
             return
 
+        if action_type == "router_self_check":
+            self.router_self_check_completed.emit(
+                self.router_id,
+                False,
+                message,
+                None,
+            )
+            return
+
         operation = (
             "clear"
             if action_type == "clear_diagnostics"
@@ -1332,6 +1669,228 @@ class RouterMonitor(QThread):
             False,
             message,
         )
+
+    @staticmethod
+    def _record_operation(
+        client: KeeneticClient | None,
+        event_type: str,
+        message: str,
+        *,
+        success: bool,
+        details: dict[str, Any] | None = None,
+        result_details: object = None,
+    ) -> None:
+        if client is None:
+            return
+        history = getattr(client, "operation_history_service", None)
+        record = getattr(history, "record", None)
+        if not callable(record):
+            return
+        safe_details = dict(details or {})
+        result_state = (
+            str(result_details.get("state") or "").strip().lower()
+            if isinstance(result_details, dict)
+            else ""
+        )
+        safe_details["state"] = (
+            result_state
+            if result_state in {
+                "confirmed",
+                "rejected",
+                "unknown",
+                "rolled_back",
+                "partial",
+            }
+            else "confirmed"
+            if success
+            else "rejected"
+        )
+        try:
+            record(
+                str(event_type),
+                str(message or ""),
+                details=safe_details,
+            )
+        except (OSError, TypeError, ValueError):
+            # История дополняет операцию и не должна влиять на её результат.
+            return
+
+    @staticmethod
+    def _record_diagnostic_event(
+        client: KeeneticClient | None,
+        event_type: str,
+        message: str,
+        *,
+        endpoint: str,
+        success: bool,
+        details: dict[str, Any] | None = None,
+        result_details: object = None,
+    ) -> None:
+        if client is None:
+            return
+        diagnostics = getattr(client, "diagnostics", None)
+        record_event = getattr(diagnostics, "record_event", None)
+        if not callable(record_event):
+            return
+        safe_details = dict(details or {})
+        result_state = (
+            str(result_details.get("state") or "").strip().lower()
+            if isinstance(result_details, dict)
+            else ""
+        )
+        safe_details["state"] = (
+            result_state
+            if result_state in {
+                "confirmed",
+                "rejected",
+                "unknown",
+                "rolled_back",
+                "partial",
+            }
+            else "confirmed"
+            if success
+            else "rejected"
+        )
+        safe_details["success"] = bool(success)
+        try:
+            record_event(
+                str(event_type),
+                str(message or ""),
+                endpoint=str(endpoint),
+                details=safe_details,
+            )
+        except (OSError, TypeError, ValueError):
+            # Диагностика не должна менять результат команды роутера.
+            return
+
+    def _record_unexpected_failure(
+        self,
+        client: KeeneticClient | None,
+        action_type: str,
+        payload: object,
+        message: str,
+    ) -> None:
+        event_type = {
+            "interface_state": "interface_state",
+            "create_wifi_network": "wifi_network",
+            "update_wifi_network": "wifi_network",
+            "set_wifi_network_enabled": "wifi_network",
+            "delete_wifi_network": "wifi_network",
+            "wifi_client_access": "wifi_client_access",
+            "rescue_mode": "rescue_mode",
+            "create_cable_internet": "wired_connection",
+            "change_cable_protocol": "cable_protocol_change",
+            "delete_dedicated_wan": "dedicated_wan",
+        }.get(str(action_type))
+        if not event_type:
+            return
+        operation = {
+            "create_wifi_network": "create",
+            "update_wifi_network": "update",
+            "set_wifi_network_enabled": "state",
+            "delete_wifi_network": "delete",
+        }.get(str(action_type), str(action_type))
+        details: dict[str, Any] = {
+            "operation": operation,
+            "display_name": self._safe_display_name(payload),
+        }
+        if action_type == "interface_state" and isinstance(payload, tuple):
+            if len(payload) >= 1:
+                details["interface_id"] = str(payload[0])
+                details["display_name"] = str(payload[0])
+            if len(payload) >= 2:
+                details["requested_enabled"] = bool(payload[1])
+        elif action_type == "wifi_client_access" and isinstance(payload, tuple):
+            if len(payload) >= 2:
+                details["allowed"] = bool(payload[1])
+        elif action_type == "rescue_mode" and isinstance(payload, tuple):
+            if payload:
+                mode = str(payload[0] or "")
+                details["operation"] = mode
+                details["display_name"] = {
+                    "rescuer": "Спасатель",
+                    "rescued": "Спасаемый",
+                }.get(mode, mode)
+        elif action_type == "create_cable_internet" and isinstance(payload, dict):
+            mode = str(payload.get("mode") or "")
+            protocol = payload.get("protocol")
+            protocol_type = (
+                str(protocol.get("type") or "none")
+                if isinstance(protocol, dict)
+                else "none"
+            )
+            if mode == "dedicated_wan":
+                event_type = "dedicated_wan"
+            details.update(
+                {
+                    "operation": "create",
+                    "mode": mode,
+                    "protocol": protocol_type,
+                }
+            )
+        elif action_type == "change_cable_protocol" and isinstance(payload, tuple):
+            if payload:
+                details["source_interface_id"] = str(payload[0] or "")
+                details["display_name"] = str(payload[0] or "")
+            settings = payload[1] if len(payload) >= 2 else None
+            if isinstance(settings, dict):
+                details["target_protocol"] = str(
+                    settings.get("target_protocol") or "none"
+                )
+        elif action_type == "delete_dedicated_wan":
+            details.update(
+                {
+                    "operation": "delete",
+                    "interface_id": str(payload or ""),
+                    "display_name": str(payload or ""),
+                }
+            )
+        self._record_operation(
+            client,
+            event_type,
+            message,
+            success=False,
+            details=details,
+        )
+        self._record_diagnostic_event(
+            client,
+            event_type,
+            message,
+            endpoint="internet/operation",
+            success=False,
+            details=details,
+        )
+
+    @classmethod
+    def _safe_display_name(cls, *values: object) -> str:
+        for value in values:
+            if isinstance(value, dict):
+                for key in (
+                    "display_name",
+                    "ssid",
+                    "name",
+                    "title",
+                    "interface_id",
+                    "mac",
+                ):
+                    candidate = str(value.get(key) or "").strip()
+                    if candidate:
+                        return candidate
+                nested = cls._safe_display_name(
+                    *(
+                        value.get(key)
+                        for key in ("network", "reference", "client")
+                    )
+                )
+                if nested:
+                    return nested
+            elif isinstance(value, (tuple, list)):
+                nested = cls._safe_display_name(*value)
+                if nested:
+                    return nested
+            elif isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
 
     @staticmethod
     def _payload_interface_id(
@@ -1369,6 +1928,11 @@ class RouterMonitor(QThread):
                     ),
                 )
         except Exception as error:
+            report_background_exception(
+                "router_monitor.immediate_refresh",
+                error,
+                details={"router_id": self.router_id},
+            )
             result = ConnectionResult(
                 success=False,
                 message=(
@@ -1430,6 +1994,10 @@ class RouterMonitor(QThread):
             requested = self._refresh_requested
             self._refresh_requested = False
         return requested
+
+    def has_refresh_request(self) -> bool:
+        with self._lock:
+            return bool(self._refresh_requested)
 
     def set_interval(
         self,

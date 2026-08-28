@@ -47,6 +47,7 @@ class RciTransport:
         session_guard: SessionGuard | None = None,
         endpoint_policy: EndpointPolicy | None = None,
         history_root: Path | None = None,
+        persist_history: bool = True,
     ) -> None:
         self.username = str(username or "")
         self.password = str(password or "")
@@ -56,6 +57,7 @@ class RciTransport:
         self.session_guard = session_guard
         self.endpoint_policy = endpoint_policy
         self.history_root = Path(history_root) if history_root is not None else None
+        self.persist_history = bool(persist_history)
 
         self.session: requests.Session | None = None
         self.base_url: str | None = None
@@ -71,6 +73,7 @@ class RciTransport:
         self.last_result_message: str = ""
         self._state = "idle"
         self._last_recorded_state = "idle"
+        self._unsupported_optional_endpoints: set[str] = set()
 
     @property
     def history_path(self) -> Path:
@@ -202,6 +205,12 @@ class RciTransport:
             self.base_url = None
             self.connection_type = None
             self.verify_ssl = True
+            self._unsupported_optional_endpoints.clear()
+
+    def endpoint_is_known_unsupported(self, endpoint: str) -> bool:
+        """Return whether an optional GET endpoint returned HTTP 404."""
+        normalized = str(endpoint or "").strip().strip("/").lower()
+        return normalized in self._unsupported_optional_endpoints
 
     def connect_candidate(
         self,
@@ -413,6 +422,13 @@ class RciTransport:
         )
 
         if (
+            not required
+            and normalized_endpoint
+            in self._unsupported_optional_endpoints
+        ):
+            return {}
+
+        if (
             self.endpoint_policy is not None
             and not self.endpoint_policy(normalized_endpoint)
         ):
@@ -613,6 +629,56 @@ class RciTransport:
                 return None
 
             if not response.ok:
+                optional_not_found = bool(
+                    response.status_code == 404
+                    and method.upper() == "GET"
+                    and not required
+                )
+                if optional_not_found:
+                    normalized_optional_endpoint = (
+                        str(endpoint or "")
+                        .strip()
+                        .strip("/")
+                        .lower()
+                    )
+                    first_detection = (
+                        normalized_optional_endpoint
+                        not in self._unsupported_optional_endpoints
+                    )
+                    self._unsupported_optional_endpoints.add(
+                        normalized_optional_endpoint
+                    )
+                    if first_detection:
+                        message = (
+                            "Необязательный RCI endpoint не поддерживается "
+                            "роутером."
+                        )
+                        self.diagnostics.record_event(
+                            "unsupported_endpoint",
+                            message,
+                            endpoint=endpoint,
+                            details={
+                                "status_code": 404,
+                                "connection_type": self.connection_type,
+                            },
+                        )
+                        self._record_attempt(
+                            phase="rci_capability",
+                            method=method,
+                            endpoint=endpoint,
+                            url=url,
+                            attempt=attempt,
+                            success=None,
+                            status_code=404,
+                            message=message,
+                            extra={
+                                "capability_state": "unsupported",
+                            },
+                        )
+                    if return_error_response:
+                        return response
+                    return None
+
                 message = (
                     f"HTTP {response.status_code} "
                     "при RCI-запросе."
@@ -942,7 +1008,8 @@ class RciTransport:
             item.update(dict(extra))
 
         self.diagnostics.record_connection_attempt(item)
-        self._append_history_file(item)
+        if self.persist_history:
+            self._append_history_file(item)
 
     @staticmethod
     def classify_failure(

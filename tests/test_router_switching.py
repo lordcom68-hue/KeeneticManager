@@ -17,6 +17,12 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 
 from ui.main_window import MainWindow  # noqa: E402
+from ui.controllers.router_connection_controller import (  # noqa: E402
+    RouterConnectionController,
+)
+from ui.controllers.settings_tab_controller import (  # noqa: E402
+    SettingsTabController,
+)
 
 
 class FakeItem:
@@ -205,8 +211,9 @@ class RouterSwitchingTests(unittest.TestCase):
         result = SimpleNamespace(success=True)
         harness, calls = self.make_selection_harness(result)
 
-        MainWindow.router_selected(
-            harness,
+        controller = object.__new__(RouterConnectionController)
+        controller.window = harness
+        controller.router_selected(
             FakeItem(2),
             FakeItem(1),
         )
@@ -224,8 +231,9 @@ class RouterSwitchingTests(unittest.TestCase):
     def test_switch_to_offline_router_still_requests_full_clear(self) -> None:
         harness, calls = self.make_selection_harness(None)
 
-        MainWindow.router_selected(
-            harness,
+        controller = object.__new__(RouterConnectionController)
+        controller.window = harness
+        controller.router_selected(
             FakeItem(2),
             FakeItem(1),
         )
@@ -349,12 +357,13 @@ class RouterSwitchingTests(unittest.TestCase):
             clear_diagnostic_button=clear_button,
         )
 
-        MainWindow.update_settings_connection_state(harness, False)
+        controller = SettingsTabController(harness)
+        controller.update_settings_connection_state(False)
 
         self.assertTrue(online_content.isHidden())
         self.assertTrue(clear_button.isHidden())
 
-        MainWindow.update_settings_connection_state(harness, True)
+        controller.update_settings_connection_state(True)
 
         self.assertFalse(online_content.isHidden())
         self.assertFalse(clear_button.isHidden())
@@ -365,8 +374,7 @@ class RouterSwitchingTests(unittest.TestCase):
             settings_compatibility_label=label,
         )
 
-        MainWindow.update_settings_router_profile(
-            harness,
+        SettingsTabController(harness).update_settings_router_profile(
             SimpleNamespace(
                 router_capabilities={
                     "wifi_management_mode": "legacy",
@@ -376,6 +384,65 @@ class RouterSwitchingTests(unittest.TestCase):
 
         self.assertIn("legacy", label.text())
         self.assertEqual(label.property("supportMode"), "legacy")
+
+    def test_settings_profile_renders_full_compatibility_matrix(self) -> None:
+        label = QLabel()
+        feature_list = QLabel()
+        harness = SimpleNamespace(
+            settings_compatibility_label=label,
+            settings_capability_list=feature_list,
+        )
+
+        SettingsTabController(harness).update_settings_router_profile(
+            SimpleNamespace(
+                compatibility_profile={
+                    "level": "limited",
+                    "level_label": "Ограниченная поддержка",
+                    "summary": "Изменение Wi-Fi отключено.",
+                    "release": "5.00.C.12.0-0",
+                    "features": [
+                        {
+                            "key": "monitoring",
+                            "label": "Мониторинг устройства",
+                            "state": "supported",
+                            "state_label": "Поддерживается",
+                            "detail": "Безопасный просмотр.",
+                        },
+                        {
+                            "key": "wifi_management",
+                            "label": "Управление Wi-Fi",
+                            "state": "unavailable",
+                            "state_label": "Недоступно",
+                            "detail": "Только просмотр.",
+                        },
+                    ],
+                }
+            ),
+        )
+
+        self.assertIn("Ограниченная поддержка", label.text())
+        self.assertEqual(label.property("supportMode"), "limited")
+        self.assertIn("Мониторинг устройства", feature_list.text())
+        self.assertIn("Управление Wi-Fi — Недоступно", feature_list.text())
+
+    def test_compatibility_feature_state_drives_unsupported_controls(self) -> None:
+        result = SimpleNamespace(
+            compatibility_profile={
+                "features": [
+                    {
+                        "key": "rescue_mode",
+                        "state": "unavailable",
+                    }
+                ]
+            }
+        )
+
+        state = MainWindow.compatibility_feature_state(
+            result,
+            "rescue_mode",
+        )
+
+        self.assertEqual(state, "unavailable")
 
 
 if __name__ == "__main__":

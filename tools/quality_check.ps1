@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = "python",
-    [int]$MinimumCoverage = 43
+    [int]$MinimumCoverage = 45
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,12 +31,12 @@ try {
         )
     }
 
-    & $Python -m compileall -q core ui tests main.py
+    & $Python -m compileall -q core ui tests tools main.py
     if ($LASTEXITCODE -ne 0) {
         throw "Python compilation failed with exit code $LASTEXITCODE."
     }
 
-    & $Python -m ruff check core ui tests main.py
+    & $Python -m ruff check core ui tests tools main.py
     if ($LASTEXITCODE -ne 0) {
         throw "Ruff found errors."
     }

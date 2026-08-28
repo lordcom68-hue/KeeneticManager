@@ -3,7 +3,10 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
+
+from PySide6.QtCore import Qt
 
 from core.connection_worker import RouterMonitor
 from core.router_status_worker import RouterStatusWorker
@@ -44,6 +47,14 @@ class FakeKeeneticClient:
         self.connected = False
         self.base_url = "http://router"
         self.transport = FakeTransport()
+        self.log_event = threading.Event()
+        self.system_log_service = SimpleNamespace(
+            read=self._read_log,
+        )
+
+    def _read_log(self, _limit: int):
+        self.log_event.set()
+        return True, "Готово", []
 
     def _result(self) -> FakeResult:
         with self.call_lock:
@@ -74,6 +85,18 @@ class AuthenticationFailureClient(FakeKeeneticClient):
         return result
 
 
+class ExplodingClient(FakeKeeneticClient):
+    def connect_to_router(self, **kwargs) -> FakeResult:
+        del kwargs
+        raise RuntimeError("synthetic refresh failure")
+
+
+class ExplodingConstructorClient(FakeKeeneticClient):
+    def __init__(self, *args, **kwargs) -> None:
+        del args, kwargs
+        raise RuntimeError("synthetic initialization failure")
+
+
 class CountingStatusWorker(RouterStatusWorker):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -85,6 +108,12 @@ class CountingStatusWorker(RouterStatusWorker):
         self.check_count += 1
         self.check_event.set()
         return True, "http://router"
+
+
+class ExplodingStatusWorker(RouterStatusWorker):
+    def _check_router(self, router: dict) -> tuple[bool, str]:
+        del router
+        raise RuntimeError("synthetic probe failure")
 
 
 class RouterMonitorSchedulingTests(unittest.TestCase):
@@ -151,6 +180,28 @@ class RouterMonitorSchedulingTests(unittest.TestCase):
             finally:
                 self.stop_monitor(monitor)
 
+    def test_refresh_storm_is_coalesced_to_one_snapshot(self) -> None:
+        with patch(
+            "core.connection_worker.KeeneticClient",
+            FakeKeeneticClient,
+        ):
+            monitor = RouterMonitor(
+                {"id": 112, "status": False},
+                interval_ms=1_000,
+                paused=True,
+            )
+
+            for _index in range(1_000):
+                monitor.request_refresh()
+            monitor.start()
+
+            try:
+                self.assertTrue(FakeKeeneticClient.call_event.wait(1.0))
+                time.sleep(0.18)
+                self.assertEqual(FakeKeeneticClient.call_count, 1)
+            finally:
+                self.stop_monitor(monitor)
+
     def test_unpaused_initial_request_does_not_duplicate_cycle(self) -> None:
         with patch(
             "core.connection_worker.KeeneticClient",
@@ -173,6 +224,62 @@ class RouterMonitorSchedulingTests(unittest.TestCase):
                     FakeKeeneticClient.call_count,
                     1,
                 )
+            finally:
+                self.stop_monitor(monitor)
+
+    def test_read_only_action_does_not_trigger_extra_full_refresh(self) -> None:
+        instances: list[FakeKeeneticClient] = []
+
+        class TrackedClient(FakeKeeneticClient):
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                instances.append(self)
+
+        with patch("core.connection_worker.KeeneticClient", TrackedClient):
+            monitor = RouterMonitor(
+                {"id": 109, "status": False},
+                interval_ms=1_000,
+                paused=False,
+            )
+            monitor.request_refresh()
+            monitor.start()
+
+            try:
+                self.assertTrue(TrackedClient.call_event.wait(1.0))
+                self.assertTrue(instances)
+                monitor.request_system_log(100)
+                self.assertTrue(instances[0].log_event.wait(1.0))
+                time.sleep(0.2)
+                self.assertEqual(TrackedClient.call_count, 1)
+            finally:
+                self.stop_monitor(monitor)
+
+    def test_explicit_refresh_is_not_lost_beside_read_only_action(self) -> None:
+        instances: list[FakeKeeneticClient] = []
+
+        class TrackedClient(FakeKeeneticClient):
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                instances.append(self)
+
+        with patch("core.connection_worker.KeeneticClient", TrackedClient):
+            monitor = RouterMonitor(
+                {"id": 110, "status": False},
+                interval_ms=1_000,
+                paused=True,
+            )
+            monitor.request_refresh()
+            monitor.start()
+
+            try:
+                self.assertTrue(TrackedClient.call_event.wait(1.0))
+                self.assertTrue(instances)
+                TrackedClient.call_event.clear()
+                monitor._actions.put(("system_log", 100))
+                monitor.request_refresh()
+                self.assertTrue(TrackedClient.call_event.wait(1.0))
+                self.assertTrue(instances[0].log_event.wait(1.0))
+                self.assertEqual(TrackedClient.call_count, 2)
             finally:
                 self.stop_monitor(monitor)
 
@@ -271,6 +378,80 @@ class RouterMonitorSchedulingTests(unittest.TestCase):
             finally:
                 self.stop_monitor(monitor)
 
+    def test_unexpected_refresh_failure_is_reported_without_thread_exit(
+        self,
+    ) -> None:
+        received = threading.Event()
+        results: list[object] = []
+
+        with (
+            patch("core.connection_worker.KeeneticClient", ExplodingClient),
+            patch(
+                "core.connection_worker.report_background_exception"
+            ) as report_exception,
+        ):
+            monitor = RouterMonitor(
+                {"id": 111, "status": False},
+                interval_ms=1_000,
+                paused=True,
+            )
+            monitor.updated.connect(
+                lambda _router_id, result: (
+                    results.append(result),
+                    received.set(),
+                ),
+                Qt.ConnectionType.DirectConnection,
+            )
+            monitor.request_refresh()
+            monitor.start()
+
+            try:
+                self.assertTrue(received.wait(1.0))
+                self.assertTrue(monitor.isRunning())
+                self.assertFalse(results[-1].success)
+                report_exception.assert_called_once()
+            finally:
+                self.stop_monitor(monitor)
+
+    def test_constructor_failure_reports_result_and_stops_cleanly(self) -> None:
+        updated = threading.Event()
+        stopped = threading.Event()
+        results: list[object] = []
+
+        with (
+            patch(
+                "core.connection_worker.KeeneticClient",
+                ExplodingConstructorClient,
+            ),
+            patch(
+                "core.connection_worker.report_background_exception"
+            ) as report_exception,
+        ):
+            monitor = RouterMonitor(
+                {"id": 113, "status": False},
+                interval_ms=1_000,
+                paused=False,
+            )
+            monitor.updated.connect(
+                lambda _router_id, result: (
+                    results.append(result),
+                    updated.set(),
+                ),
+                Qt.ConnectionType.DirectConnection,
+            )
+            monitor.monitor_stopped.connect(
+                lambda _router_id: stopped.set(),
+                Qt.ConnectionType.DirectConnection,
+            )
+            monitor.start()
+
+            self.assertTrue(updated.wait(1.0))
+            self.assertTrue(stopped.wait(1.0))
+            self.assertTrue(monitor.wait(3_000))
+            self.assertFalse(results[-1].success)
+            self.assertEqual(results[-1].failure_kind, "internal")
+            report_exception.assert_called_once()
+
 
 class ReachabilitySchedulingTests(unittest.TestCase):
     def stop_worker(self, worker: RouterStatusWorker) -> None:
@@ -312,6 +493,36 @@ class ReachabilitySchedulingTests(unittest.TestCase):
             self.assertFalse(worker.is_paused())
         finally:
             self.stop_worker(worker)
+
+    def test_probe_exception_is_reported_without_worker_exit(self) -> None:
+        received = threading.Event()
+        statuses: list[bool] = []
+        worker = ExplodingStatusWorker(
+            interval_seconds=1.0,
+            timeout_seconds=0.5,
+            paused=True,
+        )
+        worker.status_changed.connect(
+            lambda _router_id, online, _address: (
+                statuses.append(bool(online)),
+                received.set(),
+            ),
+            Qt.ConnectionType.DirectConnection,
+        )
+        worker.set_routers([{"id": 7}])
+
+        with patch(
+            "core.router_status_worker.report_background_exception"
+        ) as report_exception:
+            worker.start()
+            try:
+                worker.request_refresh()
+                self.assertTrue(received.wait(1.0))
+                self.assertTrue(worker.isRunning())
+                self.assertEqual(statuses, [False])
+                report_exception.assert_called_once()
+            finally:
+                self.stop_worker(worker)
 
 
 if __name__ == "__main__":

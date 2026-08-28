@@ -1,0 +1,23 @@
+{
+  "sprinter_kos_5_1": {
+    "model": "Sprinter (KN-3711)",
+    "release": "5.01.C.1.0-0",
+    "ndw": {
+      "components": "corewireless,mws,wireguard,openvpn,usb,storage"
+    }
+  },
+  "n6_ax1800_kos_5_0": {
+    "model": "N6 AX1800 (KN-2311)",
+    "release": "5.00.C.12.0-0",
+    "ndw": {
+      "components": "corewireless,mws,wireguard"
+    }
+  },
+  "legacy_kos_4": {
+    "model": "KeeneticOS 4 router",
+    "release": "4.03.C.8.0-0",
+    "ndw": {
+      "components": "corewireless,mws,openvpn"
+    }
+  }
+}

@@ -8,9 +8,12 @@ from typing import Any
 from core.services.wired_internet_service import (
     WiredInternetService,
 )
+from core.services.wired_connection_dispatcher import (
+    WiredConnectionDispatcher,
+)
 
 
-class DispatchClient:
+class DispatchOperations:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any]] = []
 
@@ -56,6 +59,20 @@ class OfflineClient:
         self.base_url = None
 
 
+class ActiveValidationClient:
+    def __init__(self) -> None:
+        self.session = object()
+        self.base_url = "http://192.0.2.1"
+
+    @staticmethod
+    def normalize_host(value: str) -> str:
+        return str(value or "").strip().lower()
+
+    @staticmethod
+    def redact_secrets_from_text(message: str, *_secrets: str) -> str:
+        return message
+
+
 class WiredInternetServiceTests(unittest.TestCase):
     def test_protocol_type_and_connection_type(self) -> None:
         self.assertEqual(
@@ -80,8 +97,8 @@ class WiredInternetServiceTests(unittest.TestCase):
         )
 
     def test_create_cable_dispatches_all_protocols(self) -> None:
-        client = DispatchClient()
-        service = WiredInternetService(client)
+        operations = DispatchOperations()
+        dispatcher = WiredConnectionDispatcher(operations)
 
         cases = (
             (
@@ -122,24 +139,22 @@ class WiredInternetServiceTests(unittest.TestCase):
         for settings, expected in cases:
             with self.subTest(expected=expected):
                 success, message, _details = (
-                    service.create_cable_internet(
+                    dispatcher.create(
                         settings
                     )
                 )
                 self.assertTrue(success)
                 self.assertEqual(message, expected)
                 self.assertEqual(
-                    client.calls[-1][0],
+                    operations.calls[-1][0],
                     expected,
                 )
 
     def test_unsupported_protocol_is_rejected(self) -> None:
-        service = WiredInternetService(
-            DispatchClient()
-        )
+        dispatcher = WiredConnectionDispatcher(DispatchOperations())
 
         success, message, details = (
-            service.create_cable_internet(
+            dispatcher.create(
                 {
                     "protocol": {
                         "type": "sstp",
@@ -156,6 +171,23 @@ class WiredInternetServiceTests(unittest.TestCase):
         self.assertTrue(
             details["preflight_rejected"]
         )
+
+    def test_service_uses_dispatcher_without_client_facade_roundtrip(self) -> None:
+        service = WiredInternetService(ActiveValidationClient())
+        calls: list[dict[str, Any]] = []
+
+        def create(settings: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+            calls.append(settings)
+            return True, "created", {}
+
+        service.create_wired_ipoe = create  # type: ignore[method-assign]
+
+        result = service.create_cable_internet(
+            {"protocol": {"type": "ipoe"}, "description": "Provider"}
+        )
+
+        self.assertEqual(result, (True, "created", {}))
+        self.assertEqual(calls, [{"description": "Provider"}])
 
     def test_cable_settings_normalization_is_in_service(self) -> None:
         result = (
@@ -221,6 +253,147 @@ class WiredInternetServiceTests(unittest.TestCase):
                     "Нет активной сессии с роутером.",
                 )
                 self.assertEqual(details, {})
+
+    def test_active_preflight_rejects_invalid_create_parameters(self) -> None:
+        service = WiredInternetService(ActiveValidationClient())
+        cases = (
+            (service.create_wired_pppoe, None, "переданы неверно"),
+            (service.create_wired_pppoe, {}, "PPPoE не переданы"),
+            (
+                service.create_wired_pppoe,
+                {"protocol": {"username": "", "password": ""}},
+                "нужны имя пользователя и пароль",
+            ),
+            (
+                service.create_wired_pppoe,
+                {
+                    "protocol": {
+                        "username": "user",
+                        "password": "pass",
+                        "mtu": 500,
+                    }
+                },
+                "MTU PPPoE",
+            ),
+            (service.create_wired_pptp, {}, "PPTP не переданы"),
+            (
+                service.create_wired_pptp,
+                {
+                    "protocol": {
+                        "username": "u",
+                        "password": "p",
+                        "server": "bad host",
+                    }
+                },
+                "корректный адрес PPTP",
+            ),
+            (service.create_wired_l2tp, {}, "L2TP не переданы"),
+            (
+                service.create_wired_l2tp,
+                {
+                    "protocol": {
+                        "username": "u",
+                        "password": "p",
+                        "server": "host",
+                        "mtu": 500,
+                    }
+                },
+                "MTU L2TP",
+            ),
+            (service.create_wired_ipoe, None, "переданы неверно"),
+            (service.create_wired_ipoe, {}, "Не выбран Ethernet-порт"),
+            (
+                service.create_dedicated_cable_internet,
+                {},
+                "аппаратный WAN-порт",
+            ),
+        )
+
+        for operation, settings, expected_message in cases:
+            with self.subTest(
+                operation=operation.__name__,
+                expected=expected_message,
+            ):
+                success, message, _details = operation(settings)  # type: ignore[arg-type]
+                self.assertFalse(success)
+                self.assertIn(expected_message, message)
+
+    def test_active_preflight_rejects_invalid_change_and_delete(self) -> None:
+        service = WiredInternetService(ActiveValidationClient())
+        success, message, details = service.change_cable_internet_protocol(
+            interface_id="ISP",
+            settings=None,  # type: ignore[arg-type]
+        )
+        self.assertFalse(success)
+        self.assertIn("переданы неверно", message)
+        self.assertEqual(details, {})
+
+        delete_cases = (
+            (service.delete_wired_pppoe, "PPPoE"),
+            (service.delete_wired_pptp, "PPTP"),
+            (service.delete_wired_l2tp, "L2TP"),
+            (service.delete_wired_ipoe, "интерфейс"),
+        )
+        for operation, expected_message in delete_cases:
+            with self.subTest(operation=operation.__name__):
+                success, message, operation_details = operation("")
+                self.assertFalse(success)
+                self.assertIn(expected_message, message)
+                self.assertEqual(operation_details, {})
+
+    def test_deletion_helpers_reindex_and_clear_runtime_state(self) -> None:
+        class Priority:
+            @staticmethod
+            def current_global_orders(
+                _config: dict[str, Any],
+            ) -> dict[str, int]:
+                return {"ISP": 0, "PPPoE0": 1, "Backup": 2}
+
+        class Traffic:
+            def __init__(self) -> None:
+                self.reset_ids: list[str] = []
+
+            def reset(self, interface_id: str) -> None:
+                self.reset_ids.append(interface_id)
+
+        class Ping:
+            def __init__(self) -> None:
+                self.runtime_cache = {"PPPoE0": {}, "Transport": {}}
+
+        client = ActiveValidationClient()
+        client.priority_service = Priority()  # type: ignore[attr-defined]
+        client.traffic_service = Traffic()  # type: ignore[attr-defined]
+        client.ping_check_service = Ping()  # type: ignore[attr-defined]
+        client._manually_disabled_interfaces = {  # type: ignore[attr-defined]
+            "PPPoE0",
+            "Transport",
+        }
+        service = WiredInternetService(client)
+
+        old, remaining, before_delete = service._deletion_priorities(
+            {},
+            "PPPoE0",
+        )
+        self.assertEqual(old, {"ISP": 0, "PPPoE0": 1, "Backup": 2})
+        self.assertEqual(remaining, {"ISP": 0, "Backup": 1})
+        self.assertEqual(
+            before_delete,
+            {"ISP": 0, "Backup": 1, "PPPoE0": 2},
+        )
+
+        service._forget_interfaces("PPPoE0", "Transport")
+        self.assertEqual(
+            client._manually_disabled_interfaces,  # type: ignore[attr-defined]
+            set(),
+        )
+        self.assertEqual(
+            client.traffic_service.reset_ids,  # type: ignore[attr-defined]
+            ["PPPoE0", "Transport"],
+        )
+        self.assertEqual(
+            client.ping_check_service.runtime_cache,  # type: ignore[attr-defined]
+            {},
+        )
 
 
 class ClientFacadeTests(unittest.TestCase):
@@ -359,11 +532,17 @@ class SourceBoundaryTests(unittest.TestCase):
         )
 
     def test_large_operations_are_physically_in_service(self) -> None:
-        service_path = (
+        ipoe_service_path = (
             self.project_root
             / "core"
             / "services"
-            / "wired_internet_service.py"
+            / "wired_ipoe_service.py"
+        )
+        protocol_service_path = (
+            self.project_root
+            / "core"
+            / "services"
+            / "cable_protocol_change_service.py"
         )
         client_path = (
             self.project_root
@@ -373,8 +552,8 @@ class SourceBoundaryTests(unittest.TestCase):
 
         self.assertGreater(
             self.method_span(
-                service_path,
-                "WiredInternetService",
+                ipoe_service_path,
+                "WiredIpoeService",
                 "create_wired_ipoe",
             ),
             500,
@@ -389,8 +568,8 @@ class SourceBoundaryTests(unittest.TestCase):
         )
         self.assertGreater(
             self.method_span(
-                service_path,
-                "WiredInternetService",
+                protocol_service_path,
+                "CableProtocolChangeService",
                 "change_cable_internet_protocol",
             ),
             450,

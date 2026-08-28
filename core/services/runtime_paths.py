@@ -41,6 +41,9 @@ DATABASE_DIR = APP_DATA_DIR / "database"
 DIAGNOSTICS_HISTORY_DIR = APP_DATA_DIR / "diagnostics_history"
 DIAGNOSTICS_EXPORT_DIR = APP_DATA_DIR / "diagnostics"
 LOGS_DIR = APP_DATA_DIR / "logs"
+CACHE_DIR = APP_DATA_DIR / "cache"
+CRASH_LOG_PATH = LOGS_DIR / "crash_report.jsonl"
+FATAL_LOG_PATH = LOGS_DIR / "fatal_python.log"
 LEGACY_DATABASE_DIR = PROJECT_ROOT / "database"
 
 
@@ -156,6 +159,44 @@ def router_operation_history_path(
     suffix = str(router_id) if router_id is not None else "unknown"
     directory = Path(root) if root is not None else LOGS_DIR
     return directory / f"operation_history_router_{suffix}.jsonl"
+
+
+def router_compatibility_cache_path(
+    router_id: int | None,
+    *,
+    root: Path | None = None,
+) -> Path:
+    suffix = str(router_id) if router_id is not None else "unknown"
+    directory = Path(root) if root is not None else CACHE_DIR
+    return directory / f"compatibility_router_{suffix}.json"
+
+
+def router_self_check_path(
+    router_id: int | None,
+    *,
+    root: Path | None = None,
+) -> Path:
+    suffix = str(router_id) if router_id is not None else "unknown"
+    directory = Path(root) if root is not None else DIAGNOSTICS_HISTORY_DIR
+    return directory / f"self_check_router_{suffix}.json"
+
+
+def router_self_check_history_path(
+    router_id: int | None,
+    *,
+    root: Path | None = None,
+) -> Path:
+    suffix = str(router_id) if router_id is not None else "unknown"
+    directory = Path(root) if root is not None else DIAGNOSTICS_HISTORY_DIR
+    return directory / f"self_check_history_router_{suffix}.json"
+
+
+def firmware_catalog_path(
+    *,
+    root: Path | None = None,
+) -> Path:
+    directory = Path(root) if root is not None else CACHE_DIR
+    return directory / "firmware_catalog.json"
 
 
 def legacy_router_history_path(router_id: int | None) -> Path:

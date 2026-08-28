@@ -234,13 +234,43 @@ class SourceBoundaryTests(unittest.TestCase):
         self.assertLess(self.method_span(client, 'KeeneticClient', 'build_ping_check_commands'), 8)
 
     def test_refresh_and_enrichment_call_service_directly(self) -> None:
-        source = (self.root / 'core' / 'keenetic_client.py').read_text(encoding='utf-8')
-        self.assertIn('loader=self.ping_check_service.read_config', source)
-        self.assertIn('loader=self.ping_check_service.read_status', source)
-        self.assertIn('self.ping_check_service.enrich_connection(', source)
+        details_source = (
+            self.root
+            / 'core'
+            / 'services'
+            / 'connection_details_service.py'
+        ).read_text(encoding='utf-8')
+        refresh_source = (
+            self.root / 'core' / 'services' / 'router_refresh_service.py'
+        ).read_text(encoding='utf-8')
+        self.assertIn(
+            'loader=self.client.ping_check_service.read_config',
+            refresh_source,
+        )
+        self.assertIn(
+            'loader=self.client.ping_check_service.read_status',
+            refresh_source,
+        )
+        self.assertIn(
+            'self.client.ping_check_service.enrich_connection(',
+            details_source,
+        )
 
     def test_wired_service_uses_ping_service_directly(self) -> None:
-        source = (self.root / 'core' / 'services' / 'wired_internet_service.py').read_text(encoding='utf-8')
+        services = self.root / 'core' / 'services'
+        source = '\n'.join(
+            (services / name).read_text(encoding='utf-8')
+            for name in (
+                'wired_internet_service.py',
+                'wired_protocol_service_base.py',
+                'wired_ipoe_service.py',
+                'wired_pppoe_service.py',
+                'wired_pptp_service.py',
+                'wired_l2tp_service.py',
+                'cable_protocol_change_service.py',
+                'dedicated_wan_service.py',
+            )
+        )
         self.assertIn('self.client.ping_check_service.find_ping_check_profile', source)
         self.assertIn('self.client.ping_check_service.runtime_cache', source)
         self.assertNotIn('self.client._ping_check_runtime_cache', source)

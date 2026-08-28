@@ -284,12 +284,32 @@ class SourceBoundaryTests(unittest.TestCase):
         cls.root = Path(__file__).resolve().parents[1]
 
     def test_refresh_and_services_route_directly(self) -> None:
-        client = (self.root / "core/keenetic_client.py").read_text(encoding="utf-8")
-        wired = (self.root / "core/services/wired_internet_service.py").read_text(encoding="utf-8")
+        services = self.root / "core/services"
+        result_builder = (
+            services / "connection_result_builder_service.py"
+        ).read_text(encoding="utf-8")
+        wired = "\n".join(
+            (services / name).read_text(encoding="utf-8")
+            for name in (
+                "wired_internet_service.py",
+                "wired_ipoe_service.py",
+                "wired_pppoe_service.py",
+                "wired_pptp_service.py",
+                "wired_l2tp_service.py",
+                "cable_protocol_change_service.py",
+                "dedicated_wan_service.py",
+            )
+        )
         wireless = (self.root / "core/services/wireless_isp_service.py").read_text(encoding="utf-8")
         worker = (self.root / "core/connection_worker.py").read_text(encoding="utf-8")
-        self.assertIn("self.priority_service.merge_configured_global_connections", client)
-        self.assertIn("self.priority_service.sort_connections", client)
+        self.assertIn(
+            "self.client.priority_service.merge_configured_global_connections",
+            result_builder,
+        )
+        self.assertIn(
+            "self.client.priority_service.sort_connections",
+            result_builder,
+        )
         self.assertIn("self.client.priority_service.set_internet_priorities", wired)
         self.assertIn("self.client.priority_service.set_internet_priorities", wireless)
         self.assertIn("client.priority_service.set_internet_priorities", worker)

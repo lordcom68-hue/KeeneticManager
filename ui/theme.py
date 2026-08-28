@@ -45,6 +45,12 @@ QRadioButton:disabled {
     color: #64748b;
 }
 
+QScrollArea#settingsScrollArea,
+QWidget#settingsScrollContent {
+    background: transparent;
+    border: none;
+}
+
 QFrame#headerCard,
 QFrame#dashboardCard,
 QFrame#internetSummaryCard,
@@ -223,8 +229,49 @@ QLabel#internetSettingsSectionTitle {
       color: #34d399;
   }
 
-  QLabel#settingsCompatibilityLabel[supportMode="legacy"] {
+  QLabel#settingsCompatibilityLabel[supportMode="full"] {
+      color: #34d399;
+  }
+
+  QLabel#settingsCompatibilityLabel[supportMode="legacy"],
+  QLabel#settingsCompatibilityLabel[supportMode="limited"] {
       color: #fbbf24;
+  }
+
+  QLabel#settingsCompatibilityLabel[supportMode="monitoring"] {
+      color: #94a3b8;
+  }
+
+  QLabel#settingsCapabilityList {
+      color: #cbd5e1;
+      background: rgba(15, 23, 42, 0.34);
+      border: 1px solid rgba(100, 116, 139, 0.24);
+      border-radius: 8px;
+      padding: 10px 12px;
+  }
+
+  QLabel#selfCheckSummary {
+      color: #cbd5e1;
+      background: rgba(15, 23, 42, 0.42);
+      border: 1px solid rgba(100, 116, 139, 0.30);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-weight: 700;
+  }
+
+  QLabel#selfCheckSummary[checkStatus="passed"] {
+      color: #34d399;
+      border-color: rgba(52, 211, 153, 0.45);
+  }
+
+  QLabel#selfCheckSummary[checkStatus="warning"] {
+      color: #fbbf24;
+      border-color: rgba(251, 191, 36, 0.45);
+  }
+
+  QLabel#selfCheckSummary[checkStatus="failed"] {
+      color: #fb7185;
+      border-color: rgba(251, 113, 133, 0.45);
   }
 
 QLabel#internetSettingsSectionTitle {

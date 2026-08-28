@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -96,6 +97,162 @@ class InterfaceService:
             }
 
         return False
+
+    @staticmethod
+    def prefix_from_ipv4_mask(value: Any) -> int | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.startswith("/"):
+            text = text[1:]
+
+        try:
+            prefix = int(text)
+        except ValueError:
+            try:
+                network = ipaddress.IPv4Network(f"0.0.0.0/{text}")
+            except ValueError:
+                return None
+            return int(network.prefixlen)
+        return prefix if 0 <= prefix <= 32 else None
+
+    @classmethod
+    def extract_configured_ipv4(
+        cls,
+        address_config: Any,
+    ) -> tuple[bool, str, int | None]:
+        """Extract DHCP state, address and prefix from interface config."""
+        if isinstance(address_config, dict):
+            if cls.truthy(address_config.get("dhcp")):
+                return True, "", None
+            raw_address = (
+                address_config.get("address")
+                or address_config.get("ip")
+                or address_config.get("local")
+                or ""
+            )
+            raw_mask = (
+                address_config.get("mask")
+                or address_config.get("prefix")
+                or address_config.get("prefix-length")
+            )
+        elif isinstance(address_config, str):
+            raw_address = address_config
+            raw_mask = None
+        else:
+            return False, "", None
+
+        address_text = str(raw_address or "").strip()
+        if not address_text:
+            return False, "", None
+        if "/" in address_text:
+            try:
+                interface = ipaddress.IPv4Interface(address_text)
+            except ValueError:
+                return False, "", None
+            return (
+                False,
+                str(interface.ip),
+                int(interface.network.prefixlen),
+            )
+
+        try:
+            address = ipaddress.IPv4Address(address_text)
+        except ValueError:
+            return False, "", None
+        return False, str(address), cls.prefix_from_ipv4_mask(raw_mask)
+
+    @staticmethod
+    def normalize_ipv4_text(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if "/" in text:
+            text = text.split("/", 1)[0]
+        try:
+            address = ipaddress.ip_address(text)
+        except ValueError:
+            return ""
+        if not isinstance(address, ipaddress.IPv4Address):
+            return ""
+        return str(address)
+
+    @staticmethod
+    def normalize_mac_address(value: Any) -> str:
+        compact = "".join(
+            character
+            for character in str(value or "")
+            if character.isalnum()
+        ).upper()
+        if (
+            len(compact) != 12
+            or any(
+                character not in "0123456789ABCDEF"
+                for character in compact
+            )
+        ):
+            return ""
+        return ":".join(
+            compact[index:index + 2]
+            for index in range(0, 12, 2)
+        )
+
+    @classmethod
+    def extract_configured_mac_settings(
+        cls,
+        config_item: dict[str, Any],
+    ) -> tuple[bool, str, str]:
+        """Extract MAC support, mode and manual address from config."""
+        mac_config = config_item.get("mac")
+        if not isinstance(mac_config, dict):
+            return False, "factory", ""
+
+        address_config = mac_config.get("address")
+        if address_config is None:
+            return False, "factory", ""
+        if isinstance(address_config, dict):
+            factory = address_config.get("factory")
+            if isinstance(factory, dict) and cls.truthy(factory.get("wan")):
+                return True, "factory", ""
+            for key in ("address", "mac", "value"):
+                normalized = cls.normalize_mac_address(address_config.get(key))
+                if normalized:
+                    return True, "manual", normalized
+
+        normalized = cls.normalize_mac_address(address_config)
+        if normalized:
+            return True, "manual", normalized
+        return True, "factory", ""
+
+    @classmethod
+    def validate_manual_mac(cls, value: Any) -> tuple[bool, str]:
+        normalized = cls.normalize_mac_address(value)
+        if not normalized:
+            return False, ""
+        octets = [int(part, 16) for part in normalized.split(":")]
+        if normalized in {
+            "00:00:00:00:00:00",
+            "FF:FF:FF:FF:FF:FF",
+        }:
+            return False, normalized
+        if octets[0] & 1:
+            return False, normalized
+        return True, normalized
+
+    def build_interface_mac_command(
+        self,
+        interface_id: str,
+        mac_settings: dict[str, Any],
+    ) -> str:
+        cli_name = self.client.get_interface_cli_name(interface_id)
+        interface_arg = self.client.quote_cli_argument(cli_name)
+        mode = str(mac_settings.get("mode") or "factory").strip().lower()
+        if mode == "factory":
+            return f"interface {interface_arg} mac address factory wan"
+        return (
+            f"interface {interface_arg} mac address "
+            f"{mac_settings['address']}"
+        )
 
     @staticmethod
     def interface_is_enabled(

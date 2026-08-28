@@ -4162,20 +4162,29 @@ class WiFiNetworkServiceTests(unittest.TestCase):
 
 class SourceBoundaryTests(unittest.TestCase):
     def test_client_constructs_service_and_uses_it_for_refresh(self) -> None:
-        source = (
+        client_source = (
             Path(__file__).resolve().parents[1]
             / "core"
             / "keenetic_client.py"
         ).read_text(encoding="utf-8")
+        builder_source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "services"
+            / "connection_result_builder_service.py"
+        ).read_text(encoding="utf-8")
         self.assertIn(
             "self.wifi_network_service = WiFiNetworkService(self)",
-            source,
+            client_source,
         )
         self.assertIn(
-            "self.wifi_network_service.build_networks(",
-            source,
+            "self.client.wifi_network_service.build_networks(",
+            builder_source,
         )
-        self.assertNotIn("current_wifi_networks = WifiEngine(", source)
+        self.assertNotIn(
+            "current_wifi_networks = WifiEngine(",
+            client_source,
+        )
 
     def test_worker_routes_writes_directly_to_service(self) -> None:
         source = (

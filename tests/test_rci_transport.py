@@ -323,6 +323,73 @@ class RciTransportTests(unittest.TestCase):
         self.assertIsNotNone(response)
         self.assertEqual(response.status_code, 403)
 
+    def test_optional_get_404_is_cached_without_unstable_state(self) -> None:
+        diagnostics = DiagnosticCollector()
+        with tempfile.TemporaryDirectory() as directory:
+            transport = self.make_transport(
+                Path(directory), diagnostics=diagnostics
+            )
+            session = FakeSession([FakeResponse(404)])
+            transport.session = session
+            transport.base_url = "http://192.168.1.1"
+            transport.connection_type = "Локальная сеть"
+            transport.connected = True
+            transport._state = "connected"
+
+            first = transport.get_json(
+                endpoint="show/ip/hotspot",
+                required=False,
+            )
+            second = transport.get_json(
+                endpoint="show/ip/hotspot",
+                required=False,
+            )
+
+        self.assertEqual(first, {})
+        self.assertEqual(second, {})
+        self.assertEqual(session.responses, [])
+        self.assertTrue(
+            transport.endpoint_is_known_unsupported(
+                "show/ip/hotspot"
+            )
+        )
+        self.assertEqual(transport.consecutive_failures, 0)
+        self.assertEqual(transport.connection_state(), "connected")
+        self.assertEqual(
+            [item["type"] for item in diagnostics.events],
+            ["unsupported_endpoint"],
+        )
+        self.assertFalse(
+            any(
+                item.get("new_state") == "unstable"
+                for item in diagnostics.connection_attempts
+            )
+        )
+        transport.close(clear_target=True)
+        self.assertFalse(
+            transport.endpoint_is_known_unsupported(
+                "show/ip/hotspot"
+            )
+        )
+
+    def test_required_get_404_remains_a_connection_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            transport = self.make_transport(Path(directory))
+            transport.session = FakeSession([FakeResponse(404)])
+            transport.base_url = "http://192.168.1.1"
+            transport.connection_type = "Локальная сеть"
+            transport.connected = True
+            transport._state = "connected"
+
+            with self.assertRaises(KeeneticConnectionError):
+                transport.get_json(
+                    endpoint="show/system",
+                    required=True,
+                )
+
+        self.assertEqual(transport.consecutive_failures, 1)
+        self.assertEqual(transport.connection_state(), "unstable")
+
     def test_password_hash_is_stable(self) -> None:
         value = RciTransport.create_password_hash(
             username="admin",

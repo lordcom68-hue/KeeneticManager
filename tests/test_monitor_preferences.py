@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -20,6 +21,9 @@ from ui.main_window import (
     coerce_bool_setting,
     create_application_settings,
     load_monitor_preferences,
+)
+from ui.controllers.router_connection_controller import (  # noqa: E402
+    RouterConnectionController,
 )
 
 
@@ -89,7 +93,7 @@ class MonitorPreferenceTests(unittest.TestCase):
 
     def test_connect_does_not_force_auto_refresh_checkbox(self) -> None:
         source = inspect.getsource(
-            MainWindow.connect_selected_router
+            RouterConnectionController.connect_selected
         )
 
         self.assertNotIn(
@@ -134,10 +138,12 @@ class ShutdownContractTests(unittest.TestCase):
         status_worker = object()
         active = object()
         stopping = object()
+        firmware_worker = object()
         fake_window = SimpleNamespace(
             router_status_worker=status_worker,
             router_monitors={1: active},
             stopping_router_monitors={1: active, 2: stopping},
+            firmware_inspection_worker=firmware_worker,
         )
 
         candidates = MainWindow._shutdown_thread_candidates(
@@ -146,7 +152,7 @@ class ShutdownContractTests(unittest.TestCase):
 
         self.assertEqual(
             candidates,
-            [status_worker, active, stopping],
+            [status_worker, active, stopping, firmware_worker],
         )
 
     def test_deleted_qthread_is_treated_as_stopped(self) -> None:
@@ -187,6 +193,7 @@ class ShutdownContractTests(unittest.TestCase):
                 self.router_status_worker = FakeThread()
                 self.active = FakeThread()
                 self.stopping = FakeThread()
+                self.firmware_inspection_worker = FakeThread()
                 self.router_monitors = {1: self.active}
                 self.stopping_router_monitors = {
                     2: self.stopping
@@ -208,6 +215,58 @@ class ShutdownContractTests(unittest.TestCase):
         )
         self.assertEqual(window.active.stop_calls, 1)
         self.assertEqual(window.stopping.stop_calls, 1)
+        self.assertEqual(
+            window.firmware_inspection_worker.stop_calls,
+            1,
+        )
+
+    def test_close_remains_responsive_while_request_is_finishing(self) -> None:
+        class PendingThread:
+            def __init__(self) -> None:
+                self.running = True
+                self.stop_calls = 0
+
+            def stop(self) -> None:
+                self.stop_calls += 1
+
+            def isRunning(self) -> bool:
+                return self.running
+
+        class ShutdownWindow(MainWindow):
+            def __init__(self) -> None:
+                QMainWindow.__init__(self)
+                self._shutdown_in_progress = False
+                self._shutdown_ready = False
+                self._shutdown_threads = []
+                self._shutdown_poll_timer = QTimer(self)
+                self._shutdown_poll_timer.setInterval(5)
+                self._shutdown_poll_timer.timeout.connect(
+                    self._poll_shutdown_threads
+                )
+                self.pending = PendingThread()
+                self.router_status_worker = self.pending
+                self.router_monitors = {}
+                self.stopping_router_monitors = {}
+                self.firmware_inspection_worker = None
+
+        window = ShutdownWindow()
+        window.show()
+        self.app.processEvents()
+
+        started = monotonic()
+        window.close()
+        elapsed = monotonic() - started
+        self.app.processEvents()
+
+        self.assertLess(elapsed, 0.1)
+        self.assertFalse(window.isVisible())
+        self.assertFalse(window._shutdown_ready)
+        self.assertEqual(window.pending.stop_calls, 1)
+
+        window.pending.running = False
+        QTest.qWait(30)
+        self.app.processEvents()
+        self.assertTrue(window._shutdown_ready)
 
 
 if __name__ == "__main__":

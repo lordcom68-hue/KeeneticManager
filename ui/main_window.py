@@ -32,7 +32,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.connection_worker import RouterMonitor
 from core.app_profile import (
     SETTINGS_APPLICATION,
     SETTINGS_ORGANIZATION,
@@ -42,6 +41,7 @@ from core.debug_log import write_priority_debug
 from core.database import Database
 from core.app_version import APP_NAME, APP_VERSION
 from core.services.diagnostics_service import DiagnosticsService
+from core.services.firmware_catalog_service import FirmwareCatalogService
 from core.services.runtime_paths import (
     DIAGNOSTICS_EXPORT_DIR,
     LOGS_DIR,
@@ -52,8 +52,16 @@ from core.services.rescue_mode_service import (
     RescueModeService,
 )
 from core.services.traffic_service import TrafficService
-from core.router_status_worker import RouterStatusWorker
 from ui.dialogs.add_router_dialog import AddRouterDialog
+from ui.dialogs.firmware_inspection_dialog import (
+    FirmwareComparisonDialog,
+    FirmwareComparisonWorker,
+    FirmwareInspectionDialog,
+    FirmwareInspectionWorker,
+    FirmwareRouterCheckDialog,
+    FirmwareRouterCheckWorker,
+)
+from ui.dialogs.firmware_catalog_dialog import FirmwareCatalogDialog
 from ui.dialogs.smb_file_manager import SmbFileManagerDialog
 from ui.dialogs.wired_ipoe_dialog import (
     CableInternetCreationDialog,
@@ -85,6 +93,13 @@ from ui.widgets.system_metric_chip import SystemMetricChip
 from ui.widgets.rescue_mode_switch import RescueModeSwitch
 from ui.widgets.refresh_button import AddToolButton, RefreshToolButton
 from ui.message_boxes import ask_yes_no
+from ui.controllers.router_self_check_controller import (
+    RouterSelfCheckController,
+)
+from ui.controllers.router_connection_controller import (
+    RouterConnectionController,
+)
+from ui.controllers.settings_tab_controller import SettingsTabController
 
 
 MONITOR_INTERVALS = {
@@ -244,20 +259,6 @@ class MainWindow(QMainWindow):
         self.last_seen_persisted_at: dict[int, float] = {}
         self.last_seen_write_interval_seconds = 60.0
 
-        self.router_monitors: dict[
-            int,
-            RouterMonitor,
-        ] = {}
-
-        # Потоки, которым уже отправлена команда stop(), но
-        # которые ещё завершают текущий сетевой запрос.
-        # Сильная ссылка предотвращает уничтожение QThread
-        # до фактического сигнала finished.
-        self.stopping_router_monitors: dict[
-            int,
-            RouterMonitor,
-        ] = {}
-
         self.connection_results: dict[int, object] = {}
         # Последний результат сохраняется и после подтверждённого
         # отключения, чтобы офлайн-архив содержал причину сбоя.
@@ -281,6 +282,14 @@ class MainWindow(QMainWindow):
         # Режим разработчика хранится отдельно для каждого
         # роутера и доступен даже без активного подключения.
         self.developer_mode_by_router: dict[int, bool] = {}
+        self.router_self_check_controller = RouterSelfCheckController(self)
+        self.firmware_inspection_worker: (
+            FirmwareInspectionWorker
+            | FirmwareComparisonWorker
+            | FirmwareRouterCheckWorker
+            | None
+        ) = None
+        self.firmware_catalog_service = FirmwareCatalogService()
 
         # Открытые SMB-окна храним по ID роутера, чтобы окно
         # не уничтожалось сборщиком мусора.
@@ -300,16 +309,15 @@ class MainWindow(QMainWindow):
             str,
         ] = {}
 
-        self.router_status_worker = RouterStatusWorker(
-            interval_seconds=3.0,
-            timeout_seconds=1.2,
-            paused=(
-                not self.reachability_checks_enabled
-            ),
-            parent=self,
+        self.router_connection_controller = RouterConnectionController(self)
+        self.settings_tab_controller = SettingsTabController(self)
+        # Совместимые aliases для вкладок и существующих обработчиков.
+        self.router_monitors = self.router_connection_controller.monitors
+        self.stopping_router_monitors = (
+            self.router_connection_controller.stopping_monitors
         )
-        self.router_status_worker.status_changed.connect(
-            self.router_reachability_changed
+        self.router_status_worker = (
+            self.router_connection_controller.status_worker
         )
 
         # Результаты групповых операций над объединённой
@@ -337,10 +345,7 @@ class MainWindow(QMainWindow):
         self.connect_signals()
         self.load_routers()
 
-        self.router_status_worker.set_routers(
-            self.routers
-        )
-        self.router_status_worker.start()
+        self.router_connection_controller.start_status_worker(self.routers)
 
         # До первого успешного подключения все динамические
         # поля и разделы остаются пустыми.
@@ -1428,228 +1433,40 @@ class MainWindow(QMainWindow):
         return card, layout
 
     def create_settings_tab(self) -> QWidget:
-        page = QWidget()
-        page_layout = QVBoxLayout(page)
-        page_layout.setContentsMargins(
-            18,
-            18,
-            18,
-            18,
-        )
-        page_layout.setSpacing(14)
-
-        self.settings_online_content = QWidget()
-        online_layout = QVBoxLayout(
-            self.settings_online_content
-        )
-        online_layout.setContentsMargins(0, 0, 0, 0)
-        online_layout.setSpacing(14)
-
-        monitoring_card, monitoring_layout = (
-            self.create_dashboard_card(
-                "Обновление и доступность"
-            )
-        )
-        monitoring_description = QLabel(
-            "Управляет фоновым обновлением подключённых роутеров "
-            "и независимой проверкой их доступности."
-        )
-        monitoring_description.setWordWrap(True)
-        monitoring_layout.addWidget(monitoring_description)
-        if hasattr(self, "left_panel_layout"):
-            self.left_panel_layout.removeWidget(
-                self.monitor_controls
-            )
-        monitoring_layout.addWidget(self.monitor_controls)
-        online_layout.addWidget(monitoring_card)
-
-        compatibility_card, compatibility_layout = (
-            self.create_dashboard_card(
-                "Совместимость роутера"
-            )
-        )
-        self.settings_compatibility_label = QLabel(
-            "Профиль возможностей будет определён после подключения."
-        )
-        self.settings_compatibility_label.setObjectName(
-            "settingsCompatibilityLabel"
-        )
-        self.settings_compatibility_label.setWordWrap(True)
-        compatibility_layout.addWidget(
-            self.settings_compatibility_label
-        )
-        online_layout.addWidget(compatibility_card)
-
-        # Совместимое имя сохраняет прежний контракт интерфейса.
-        self.settings_connected_content = self.settings_online_content
-
-        self.developer_card, developer_layout = (
-            self.create_dashboard_card(
-                "Режим разработчика"
-            )
-        )
-
-        description = QLabel(
-            "Собирает безопасные RCI-снимки и журнал ошибок. "
-            "Пароли, токены, ключи и другие секреты "
-            "удаляются перед сохранением."
-        )
-        description.setWordWrap(True)
-
-        self.developer_mode_checkbox = QCheckBox(
-            "Включить режим разработчика"
-        )
-        self.developer_mode_checkbox.setChecked(False)
-
-        self.create_diagnostic_button = QPushButton(
-            "Создать диагностический архив"
-        )
-        self.clear_diagnostic_button = QPushButton(
-            "Очистить диагностические данные"
-        )
-
-        self.diagnostic_status_label = QLabel(
-            "Режим разработчика для выбранного "
-            "роутера выключен."
-        )
-        self.diagnostic_status_label.setWordWrap(True)
-
-        developer_layout.addWidget(description)
-        developer_layout.addWidget(
-            self.developer_mode_checkbox
-        )
-        developer_layout.addWidget(
-            self.create_diagnostic_button
-        )
-        developer_layout.addWidget(
-            self.clear_diagnostic_button
-        )
-        developer_layout.addWidget(
-            self.diagnostic_status_label
-        )
-
-        page_layout.addWidget(
-            self.settings_online_content
-        )
-        page_layout.addWidget(
-            self.developer_card
-        )
-        page_layout.addStretch()
-
-        self.create_diagnostic_button.clicked.connect(
-            self.create_diagnostic_archive
-        )
-        self.clear_diagnostic_button.clicked.connect(
-            self.clear_diagnostic_data
-        )
-        self.developer_mode_checkbox.toggled.connect(
-            self.developer_mode_changed
-        )
-
-        self.sync_developer_mode_for_selected_router()
-        return page
+        """Совместимый фасад контроллера вкладки настроек."""
+        return self.settings_tab_controller.create_settings_tab()
 
     def update_settings_connection_state(
         self,
         connected: bool,
     ) -> None:
-        """Показывает требующие подключения настройки только онлайн."""
-        connected = bool(connected)
-        if hasattr(self, "settings_online_content"):
-            self.settings_online_content.setVisible(connected)
-        if hasattr(self, "clear_diagnostic_button"):
-            self.clear_diagnostic_button.setVisible(connected)
+        """Совместимый фасад контроллера вкладки настроек."""
+        self.settings_tab_controller.update_settings_connection_state(
+            connected=connected,
+        )
 
     def update_settings_router_profile(self, result: object) -> None:
-        if not hasattr(self, "settings_compatibility_label"):
-            return
-        capabilities = getattr(
-            result,
-            "router_capabilities",
-            None,
+        """Совместимый фасад контроллера вкладки настроек."""
+        self.settings_tab_controller.update_settings_router_profile(
+            result=result,
         )
-        if not isinstance(capabilities, dict):
-            capabilities = {}
-        mode = str(
-            capabilities.get("wifi_management_mode") or "monitoring"
-        ).strip().lower()
-        if mode == "mws":
-            text = (
-                "Полная поддержка: мониторинг и управление Wi‑Fi "
-                "через MWS."
-            )
-            support_mode = "supported"
-        elif mode == "legacy":
-            text = (
-                "Совместимый legacy‑режим KeeneticOS 4: управление "
-                "физическими точками доступа."
-            )
-            support_mode = "legacy"
-        else:
-            text = (
-                "Ограниченная поддержка: мониторинг доступен, "
-                "изменение Wi‑Fi для этой прошивки отключено."
-            )
-            support_mode = "monitoring"
-        self.settings_compatibility_label.setText(text)
-        self.settings_compatibility_label.setProperty(
-            "supportMode",
-            support_mode,
-        )
-        self.settings_compatibility_label.style().unpolish(
-            self.settings_compatibility_label
-        )
-        self.settings_compatibility_label.style().polish(
-            self.settings_compatibility_label
+
+    def _apply_settings_compatibility_style(
+        self,
+        support_mode: str,
+    ) -> None:
+        """Совместимый фасад контроллера вкладки настроек."""
+        self.settings_tab_controller._apply_settings_compatibility_style(
+            support_mode=support_mode,
         )
 
     def developer_mode_changed(
         self,
         enabled: bool,
     ) -> None:
-        router_id = self.get_selected_router_id()
-
-        if router_id is None:
-            blocker = QSignalBlocker(
-                self.developer_mode_checkbox
-            )
-            self.developer_mode_checkbox.setChecked(False)
-            del blocker
-            self.update_diagnostic_controls()
-            return
-
-        self.developer_mode_by_router[router_id] = bool(enabled)
-        self.update_diagnostic_controls()
-
-        connected = self.router_is_fully_connected(router_id)
-        if enabled:
-            self.diagnostic_status_label.setText(
-                (
-                    "Режим разработчика включён. Можно создать "
-                    "диагностический архив текущего подключения."
-                    if connected
-                    else (
-                        "Режим разработчика включён. Роутер сейчас "
-                        "не подключён, поэтому будет создан "
-                        "офлайн-архив с локальными журналами и "
-                        "историей попыток подключения."
-                    )
-                )
-            )
-        else:
-            self.diagnostic_status_label.setText(
-                "Режим разработчика для выбранного роутера выключен."
-            )
-
-        self.statusBar().showMessage(
-            (
-                f"Режим разработчика включён для роутера {router_id}"
-                if enabled
-                else (
-                    f"Режим разработчика выключен для роутера {router_id}"
-                )
-            ),
-            3000,
+        """Совместимый фасад контроллера вкладки настроек."""
+        self.settings_tab_controller.developer_mode_changed(
+            enabled=enabled,
         )
 
     def router_is_fully_connected(
@@ -1671,44 +1488,8 @@ class MainWindow(QMainWindow):
     def sync_developer_mode_for_selected_router(
         self,
     ) -> None:
-        router_id = self.get_selected_router_id()
-        selected = router_id is not None
-        connected = self.router_is_fully_connected(router_id)
-        enabled = bool(
-            selected
-            and self.developer_mode_by_router.get(
-                router_id,
-                False,
-            )
-        )
-
-        blocker = QSignalBlocker(
-            self.developer_mode_checkbox
-        )
-        self.developer_mode_checkbox.setChecked(enabled)
-        del blocker
-
-        self.update_settings_connection_state(connected)
-
-        if not selected:
-            self.diagnostic_status_label.setText(
-                "Выберите роутер для создания диагностического архива."
-            )
-        elif enabled and connected:
-            self.diagnostic_status_label.setText(
-                "Режим разработчика включён для выбранного роутера."
-            )
-        elif enabled:
-            self.diagnostic_status_label.setText(
-                "Режим разработчика включён. Архив можно создать "
-                "даже без активного подключения к роутеру."
-            )
-        else:
-            self.diagnostic_status_label.setText(
-                "Режим разработчика для выбранного роутера выключен."
-            )
-
-        self.update_diagnostic_controls()
+        """Совместимый фасад контроллера вкладки настроек."""
+        self.settings_tab_controller.sync_developer_mode_for_selected_router()
 
     def disable_developer_mode_for_router(
         self,
@@ -1716,8 +1497,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         # Отключение HTTP-сессии не выключает режим разработчика.
         # Это необходимо для создания офлайн-диагностики.
-        if router_id == self.get_selected_router_id():
-            self.sync_developer_mode_for_selected_router()
+        """Совместимый фасад контроллера вкладки настроек."""
+        self.settings_tab_controller.disable_developer_mode_for_router(
+            router_id=router_id,
+        )
 
     def update_diagnostic_controls(self) -> None:
         router_id = self.get_selected_router_id()
@@ -1733,6 +1516,317 @@ class MainWindow(QMainWindow):
         self.developer_mode_checkbox.setEnabled(selected)
         self.create_diagnostic_button.setEnabled(enabled)
         self.clear_diagnostic_button.setEnabled(enabled)
+        self.inspect_firmware_button.setEnabled(
+            enabled and self.firmware_inspection_worker is None
+        )
+        if hasattr(self, "compare_firmwares_button"):
+            self.compare_firmwares_button.setEnabled(
+                enabled and self.firmware_inspection_worker is None
+            )
+        if hasattr(self, "check_router_firmware_button"):
+            self.check_router_firmware_button.setEnabled(
+                enabled
+                and self.router_is_fully_connected(router_id)
+                and self.firmware_inspection_worker is None
+            )
+        if hasattr(self, "firmware_catalog_button"):
+            self.firmware_catalog_button.setEnabled(
+                enabled and self.firmware_inspection_worker is None
+            )
+        self.router_self_check_controller.update_controls()
+
+    def open_firmware_catalog(self) -> None:
+        dialog = FirmwareCatalogDialog(
+            self.firmware_catalog_service,
+            self,
+        )
+        dialog.exec()
+
+    def inspect_firmware(self) -> None:
+        if self.firmware_inspection_worker is not None:
+            return
+        initial_directory = str(
+            self.settings.value(
+                "developer/last_firmware_directory",
+                str(Path.home()),
+            )
+            or Path.home()
+        )
+        if not Path(initial_directory).is_dir():
+            initial_directory = str(Path.home())
+        filename, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Выберите файл прошивки",
+            initial_directory,
+            "Образы прошивки (*.bin);;Все файлы (*)",
+        )
+        if not filename:
+            return
+
+        selected_path = Path(filename)
+        self.settings.setValue(
+            "developer/last_firmware_directory",
+            str(selected_path.parent),
+        )
+        worker = FirmwareInspectionWorker(selected_path, self)
+        self.firmware_inspection_worker = worker
+        worker.progress_changed.connect(
+            self.firmware_inspection_progress
+        )
+        worker.completed.connect(
+            self.firmware_inspection_completed
+        )
+        worker.failed.connect(self.firmware_inspection_failed)
+        worker.cancelled.connect(self.firmware_inspection_cancelled)
+        worker.finished.connect(self.firmware_inspection_finished)
+        self.update_diagnostic_controls()
+        self.diagnostic_status_label.setText(
+            f"Анализ прошивки «{selected_path.name}»..."
+        )
+        worker.start()
+
+    def compare_firmwares(self) -> None:
+        if self.firmware_inspection_worker is not None:
+            return
+        initial_directory = str(
+            self.settings.value(
+                "developer/last_firmware_directory",
+                str(Path.home()),
+            )
+            or Path.home()
+        )
+        if not Path(initial_directory).is_dir():
+            initial_directory = str(Path.home())
+
+        first_filename, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Выберите первую прошивку",
+            initial_directory,
+            "Образы прошивки (*.bin);;Все файлы (*)",
+        )
+        if not first_filename:
+            return
+        first_path = Path(first_filename)
+
+        second_filename, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Выберите вторую прошивку",
+            str(first_path.parent),
+            "Образы прошивки (*.bin);;Все файлы (*)",
+        )
+        if not second_filename:
+            return
+        second_path = Path(second_filename)
+        try:
+            same_file = first_path.resolve() == second_path.resolve()
+        except OSError:
+            same_file = first_path == second_path
+        if same_file:
+            QMessageBox.information(
+                self,
+                "Сравнение прошивок",
+                "Выберите два разных файла прошивки.",
+            )
+            return
+
+        self.settings.setValue(
+            "developer/last_firmware_directory",
+            str(second_path.parent),
+        )
+        worker = FirmwareComparisonWorker(
+            first_path,
+            second_path,
+            self,
+        )
+        self.firmware_inspection_worker = worker
+        worker.progress_changed.connect(self.firmware_inspection_progress)
+        worker.completed.connect(self.firmware_comparison_completed)
+        worker.failed.connect(self.firmware_inspection_failed)
+        worker.cancelled.connect(self.firmware_inspection_cancelled)
+        worker.finished.connect(self.firmware_inspection_finished)
+        self.update_diagnostic_controls()
+        self.diagnostic_status_label.setText(
+            f"Сравнение «{first_path.name}» и «{second_path.name}»..."
+        )
+        worker.start()
+
+    def check_firmware_for_selected_router(self) -> None:
+        if self.firmware_inspection_worker is not None:
+            return
+        router_id = self.get_selected_router_id()
+        if not self.router_is_fully_connected(router_id):
+            QMessageBox.warning(
+                self,
+                "Проверка прошивки",
+                "Для точного сопоставления сначала подключитесь к роутеру.",
+            )
+            return
+        result = self.connection_results.get(router_id)
+        if result is None:
+            return
+
+        router = next(
+            (
+                item
+                for item in self.routers
+                if int(item.get("id", -1)) == int(router_id or -1)
+            ),
+            {},
+        )
+        profile = getattr(result, "compatibility_profile", None)
+        if not isinstance(profile, dict):
+            profile = {}
+        capabilities = getattr(result, "router_capabilities", None)
+        if not isinstance(capabilities, dict):
+            capabilities = {}
+        router_name = str(
+            router.get("name")
+            or getattr(result, "model", "")
+            or "Выбранный роутер"
+        )
+        router_model = str(
+            getattr(result, "model", "")
+            or profile.get("model")
+            or ""
+        )
+        current_version = str(
+            getattr(result, "version", "")
+            or profile.get("release")
+            or ""
+        )
+        router_wifi_mode = str(
+            profile.get("wifi_management_mode")
+            or capabilities.get("wifi_management_mode")
+            or ""
+        )
+
+        initial_directory = str(
+            self.settings.value(
+                "developer/last_firmware_directory",
+                str(Path.home()),
+            )
+            or Path.home()
+        )
+        if not Path(initial_directory).is_dir():
+            initial_directory = str(Path.home())
+        filename, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            f"Выберите прошивку для «{router_name}»",
+            initial_directory,
+            "Образы прошивки (*.bin);;Все файлы (*)",
+        )
+        if not filename:
+            return
+
+        selected_path = Path(filename)
+        self.settings.setValue(
+            "developer/last_firmware_directory",
+            str(selected_path.parent),
+        )
+        worker = FirmwareRouterCheckWorker(
+            selected_path,
+            router_name=router_name,
+            router_model=router_model,
+            current_version=current_version,
+            router_wifi_mode=router_wifi_mode,
+            parent=self,
+        )
+        self.firmware_inspection_worker = worker
+        worker.progress_changed.connect(self.firmware_inspection_progress)
+        worker.completed.connect(self.firmware_router_check_completed)
+        worker.failed.connect(self.firmware_inspection_failed)
+        worker.cancelled.connect(self.firmware_inspection_cancelled)
+        worker.finished.connect(self.firmware_inspection_finished)
+        self.update_diagnostic_controls()
+        self.diagnostic_status_label.setText(
+            f"Проверка «{selected_path.name}» для «{router_name}»..."
+        )
+        worker.start()
+
+    def firmware_inspection_progress(
+        self,
+        percentage: int,
+        message: str,
+    ) -> None:
+        self.diagnostic_status_label.setText(
+            f"{message} {max(0, min(100, int(percentage)))}%"
+        )
+
+    def firmware_inspection_completed(self, result: object) -> None:
+        saved = self.firmware_catalog_service.upsert_inspection(result)
+        self.diagnostic_status_label.setText(
+            (
+                "Анализ завершён, запись добавлена в каталог."
+                if saved is not None
+                else "Анализ завершён, но каталог сохранить не удалось."
+            )
+        )
+        if self._shutdown_in_progress:
+            return
+        dialog = FirmwareInspectionDialog(result, self)
+        dialog.exec()
+
+    def firmware_comparison_completed(self, result: object) -> None:
+        first_saved = self.firmware_catalog_service.upsert_inspection(
+            result.first
+        )
+        second_saved = self.firmware_catalog_service.upsert_inspection(
+            result.second
+        )
+        self.diagnostic_status_label.setText(
+            (
+                "Сравнение завершено, обе записи добавлены в каталог."
+                if first_saved is not None and second_saved is not None
+                else "Сравнение завершено, но каталог сохранён не полностью."
+            )
+        )
+        if self._shutdown_in_progress:
+            return
+        dialog = FirmwareComparisonDialog(result, self)
+        dialog.exec()
+
+    def firmware_router_check_completed(self, result: object) -> None:
+        saved = self.firmware_catalog_service.record_router_check(result)
+        self.diagnostic_status_label.setText(
+            (
+                "Проверка завершена, вердикт сохранён в каталоге."
+                if saved is not None
+                else "Проверка завершена, но каталог сохранить не удалось."
+            )
+        )
+        if self._shutdown_in_progress:
+            return
+        dialog = FirmwareRouterCheckDialog(result, self)
+        dialog.exec()
+
+    def firmware_inspection_failed(self, message: str) -> None:
+        text = str(message or "Не удалось проанализировать прошивку.")
+        self.diagnostic_status_label.setText(text)
+        if not self._shutdown_in_progress:
+            QMessageBox.warning(
+                self,
+                "Анализ прошивки",
+                text,
+            )
+
+    def firmware_inspection_cancelled(self) -> None:
+        self.diagnostic_status_label.setText("Анализ прошивки отменён.")
+
+    def firmware_inspection_finished(self) -> None:
+        worker = self.sender()
+        if worker is self.firmware_inspection_worker:
+            self.firmware_inspection_worker = None
+        if isinstance(
+            worker,
+            (
+                FirmwareInspectionWorker,
+                FirmwareComparisonWorker,
+                FirmwareRouterCheckWorker,
+            ),
+        ):
+            worker.deleteLater()
+        if not self._shutdown_in_progress:
+            self.update_diagnostic_controls()
 
     def diagnostic_application_settings(
         self,
@@ -2006,6 +2100,7 @@ class MainWindow(QMainWindow):
         active_ids = set(
             self.persisted_router_status
         )
+        self.router_self_check_controller.load_results(active_ids)
         self.last_seen_persisted_at = {
             router_id: timestamp
             for router_id, timestamp
@@ -2587,58 +2682,9 @@ class MainWindow(QMainWindow):
         current: QListWidgetItem | None,
         previous: QListWidgetItem | None,
     ) -> None:
-        del previous
-
-        if current is None:
-            self.clear_router_information()
-            self.sync_developer_mode_for_selected_router()
-            return
-
-        router_id = current.data(
-            self.ROUTER_ID_ROLE
-        )
-
-        router = self.database.get_router(
-            router_id
-        )
-
-        if router is None:
-            self.clear_router_information()
-            return
-
-        result = self.connection_results.get(
-            router_id
-        )
-        has_connected_snapshot = bool(
-            result is not None
-            and getattr(result, "success", False)
-        )
-
-        self.show_router_information(
-            router,
-            preserve_live_content=has_connected_snapshot,
-        )
-
-        if hasattr(self, "internet_tab"):
-            self.internet_tab.set_router(
-                router_id
-            )
-
-        if hasattr(self, "wifi_tab"):
-            self.wifi_tab.set_router(
-                router_id
-            )
-
-        if hasattr(self, "journal_tab"):
-            self.journal_tab.set_router(router_id)
-
-        self.sync_developer_mode_for_selected_router()
-
-        if has_connected_snapshot:
-            self.show_connection_result(result)
-
-        self.set_router_monitor_ui_state(
-            self.router_monitor_ui_state(router_id)
+        self.router_connection_controller.router_selected(
+            current,
+            previous,
         )
 
     def show_router_information(
@@ -2826,88 +2872,20 @@ class MainWindow(QMainWindow):
         self,
         enabled: bool,
     ) -> None:
-        enabled = bool(enabled)
-        self.auto_refresh_enabled = enabled
-        self.settings.setValue(
-            "monitor/auto_refresh_enabled",
-            enabled,
-        )
-        self.settings.sync()
-
-        for monitor in self.router_monitors.values():
-            monitor.set_paused(not enabled)
-
-        self.statusBar().showMessage(
-            (
-                "Автообновление данных включено"
-                if enabled
-                else "Автообновление данных приостановлено"
-            ),
-            3000,
-        )
+        self.router_connection_controller.toggle_auto_refresh(enabled)
 
     def toggle_reachability_checks(
         self,
         enabled: bool,
     ) -> None:
-        enabled = bool(enabled)
-        self.reachability_checks_enabled = enabled
-        self.settings.setValue(
-            "monitor/reachability_enabled",
-            enabled,
-        )
-        self.settings.sync()
-
-        self.router_status_worker.set_paused(
-            not enabled
-        )
-
-        # Старое состояние не выдаётся за актуальное после
-        # смены режима. При включении показываем «проверяется»,
-        # при выключении — нейтральный неизвестный статус.
-        self.router_reachability = {
-            int(router["id"]): None
-            for router in self.routers
-        }
-        self.router_reachable_address.clear()
-        self.filter_routers(
-            self.search_input.text()
-        )
-
-        self.statusBar().showMessage(
-            (
-                "Проверка доступности включена"
-                if enabled
-                else "Проверка доступности приостановлена"
-            ),
-            3000,
-        )
+        self.router_connection_controller.toggle_reachability_checks(enabled)
 
     def change_refresh_interval(
         self,
         interval_name: str,
     ) -> None:
-        interval_ms = self.monitor_intervals.get(
+        self.router_connection_controller.change_refresh_interval(
             interval_name
-        )
-
-        if interval_ms is None:
-            return
-
-        self.monitor_interval_ms = interval_ms
-        self.settings.setValue(
-            "monitor/interval_ms",
-            interval_ms,
-        )
-        self.settings.sync()
-
-        for monitor in self.router_monitors.values():
-            monitor.set_interval(interval_ms)
-
-        self.statusBar().showMessage(
-            f"Интервал обновления: "
-            f"{interval_name}",
-            3000,
         )
 
     def refresh_all_routers(
@@ -2916,300 +2894,26 @@ class MainWindow(QMainWindow):
         *,
         announce: bool = True,
     ) -> None:
-        del checked
-
-        if not self.router_monitors:
-            if announce:
-                self.statusBar().showMessage(
-                    "Нет подключённых роутеров",
-                    3000,
-                )
-            return
-
-        for monitor in self.router_monitors.values():
-            monitor.request_refresh()
-
-        if announce:
-            self.statusBar().showMessage(
-                "Запрошено обновление подключённых роутеров",
-                3000,
-            )
+        self.router_connection_controller.refresh_all(
+            checked,
+            announce=announce,
+        )
 
     def refresh_selected_router(self) -> None:
-        router_id = self.get_selected_router_id()
-        monitor = (
-            self.router_monitors.get(router_id)
-            if router_id is not None
-            else None
-        )
-        if monitor is None:
-            self.statusBar().showMessage(
-                "Выбранный роутер не подключён",
-                3000,
-            )
-            return
-
-        monitor.request_refresh()
-        self.statusBar().showMessage(
-            "Запрошено обновление клиентов",
-            3000,
-        )
+        self.router_connection_controller.refresh_selected()
 
     def connect_selected_router(self) -> None:
-        router_id = self.get_selected_router_id()
-
-        if router_id is None:
-            return
-
-        if router_id in self.router_monitors:
-            QMessageBox.information(
-                self,
-                "Подключение",
-                "Этот роутер уже подключён.",
-            )
-            return
-
-        if router_id in self.stopping_router_monitors:
-            QMessageBox.information(
-                self,
-                "Отключение завершается",
-                (
-                    "Дождитесь полной остановки мониторинга, "
-                    "затем подключите роутер снова."
-                ),
-            )
-            return
-
-        try:
-            router = self.database.get_router(
-                router_id,
-                include_password=True,
-            )
-        except CredentialStoreError as error:
-            QMessageBox.critical(
-                self,
-                "Пароль недоступен",
-                str(error),
-            )
-            return
-
-        if router is None:
-            QMessageBox.warning(
-                self,
-                "Ошибка",
-                "Роутер не найден в базе данных.",
-            )
-            return
-
-        self.pending_rescue_modes.pop(router_id, None)
-        self.clear_router_state()
-
-        self.status_label.setText(
-            "● Подключение..."
-        )
-        self.connected_address_label.setText(
-            "Фактический адрес: —\n"
-            "Подключение: —"
-        )
-
-        monitor = RouterMonitor(
-            router=router,
-            interval_ms=self.monitor_interval_ms,
-            paused=(
-                not self.auto_refresh_checkbox.isChecked()
-            ),
-            parent=self,
-        )
-
-        monitor.updated.connect(
-            self.connection_completed
-        )
-        monitor.interface_action_completed.connect(
-            self.interface_action_completed
-        )
-        monitor.interface_reconnect_completed.connect(
-            self.interface_reconnect_completed
-        )
-        monitor.interface_settings_completed.connect(
-            self.interface_settings_completed
-        )
-        monitor.connection_creation_completed.connect(
-            self.connection_creation_completed
-        )
-        monitor.wireless_scan_completed.connect(
-            self.wireless_scan_completed
-        )
-        monitor.connection_delete_completed.connect(
-            self.connection_delete_completed
-        )
-        monitor.connection_protocol_change_completed.connect(
-            self.connection_protocol_change_completed
-        )
-        monitor.wifi_network_action_completed.connect(
-            self.wifi_network_action_completed
-        )
-        monitor.wifi_client_access_completed.connect(
-            self.wifi_client_access_completed
-        )
-        monitor.rescue_mode_action_completed.connect(
-            self.rescue_mode_action_completed
-        )
-        monitor.priorities_action_completed.connect(
-            self.internet_priorities_action_completed
-        )
-        monitor.diagnostic_action_completed.connect(
-            self.diagnostic_action_completed
-        )
-        monitor.system_log_completed.connect(
-            self.system_log_completed
-        )
-        monitor.monitor_stopped.connect(
-            self.monitor_stopped
-        )
-        monitor.finished.connect(
-            lambda rid=router_id, thread=monitor:
-            self.router_monitor_finished(
-                rid,
-                thread,
-            )
-        )
-
-        self.router_monitors[
-            router_id
-        ] = monitor
-
-        self.set_router_monitor_ui_state("connecting")
-        # Начальный снимок выполняется всегда. Если автообновление
-        # выключено, после него монитор вернётся в состояние паузы.
-        monitor.request_refresh()
-        monitor.start()
-
-        self.statusBar().showMessage(
-            f"Подключение к «{router['name']}»..."
-        )
+        self.router_connection_controller.connect_selected()
 
     def connection_completed(
         self,
         router_id: int,
         result,
     ) -> None:
-        if router_id not in self.router_monitors:
-            return
-
-        self.last_monitor_results[router_id] = result
-        current_router_id = self.get_selected_router_id()
-        confirmed_offline = bool(
-            getattr(
-                result,
-                "confirmed_offline",
-                not bool(result.success),
-            )
+        self.router_connection_controller.connection_completed(
+            router_id,
+            result,
         )
-        transient_failure = bool(
-            not result.success
-            and getattr(
-                result,
-                "transient_failure_suppressed",
-                False,
-            )
-        )
-        connection_state = str(
-            getattr(result, "connection_state", "") or ""
-        ).strip().lower()
-        independently_reachable = (
-            self.router_reachability.get(router_id) is True
-        )
-
-        try:
-            if result.success:
-                self.persist_router_monitor_status(
-                    router_id=router_id,
-                    is_online=True,
-                )
-            elif confirmed_offline and not independently_reachable:
-                self.persist_router_monitor_status(
-                    router_id=router_id,
-                    is_online=False,
-                )
-        except sqlite3.Error as error:
-            QMessageBox.warning(
-                self,
-                "Ошибка базы данных",
-                str(error),
-            )
-
-        if result.success:
-            self.update_router_item_status(
-                router_id=router_id,
-                is_online=True,
-            )
-            self.connection_results[router_id] = result
-            self.update_active_cable_dialog(router_id, result)
-            self.update_active_wireless_isp_dialog(router_id, result)
-        elif confirmed_offline:
-            self.update_router_item_status(
-                router_id=router_id,
-                is_online=independently_reachable,
-            )
-            self.connection_results.pop(router_id, None)
-            self.clear_router_traffic_history(router_id)
-        # При transient-сбое карточки, адрес и зелёный статус списка
-        # сохраняются до подтверждения третьей последовательной ошибки.
-
-        if current_router_id != router_id:
-            return
-
-        if transient_failure:
-            retrying = connection_state == "retrying"
-            self.set_router_monitor_ui_state(
-                "retrying"
-                if retrying
-                else "unstable"
-            )
-            self.status_label.setText(
-                "● Повторная попытка"
-                if retrying
-                else "● Связь нестабильна"
-            )
-            self.statusBar().showMessage(result.message, 5000)
-            self.sync_developer_mode_for_selected_router()
-            return
-
-        if connection_state == "authentication_required":
-            self.set_router_monitor_ui_state(
-                "authentication_required"
-            )
-            self.status_label.setText(
-                "● Требуется авторизация"
-            )
-            self.connected_address_label.setText(
-                "Фактический адрес: роутер доступен\n"
-                "Подключение: проверьте логин и пароль"
-            )
-            self.clear_router_state()
-            self.statusBar().showMessage(
-                result.message
-                + " Повторные попытки приостановлены.",
-                8000,
-            )
-            self.sync_developer_mode_for_selected_router()
-            return
-
-        if not result.success:
-            self.set_router_monitor_ui_state("reconnecting")
-            self.status_label.setText("● Offline")
-            self.connected_address_label.setText(
-                "Фактический адрес: —\n"
-                "Подключение: —"
-            )
-            self.clear_router_state()
-            self.statusBar().showMessage(result.message, 5000)
-            self.sync_developer_mode_for_selected_router()
-            return
-
-        self.set_router_monitor_ui_state("connected")
-        self.show_connection_result(result)
-        self.sync_developer_mode_for_selected_router()
 
     def persist_router_monitor_status(
         self,
@@ -6307,15 +6011,24 @@ class MainWindow(QMainWindow):
             result.internet_connections,
             result.wifi_networks,
         )
+        rescue_feature_state = self.compatibility_feature_state(
+            result,
+            "rescue_mode",
+        )
+        rescue_visible = rescue_feature_state != "unavailable"
+        self.rescue_mode_switch.setVisible(rescue_visible)
+        if not rescue_visible:
+            self.rescue_mode_switch.clear()
         pending_rescue_mode = self.pending_rescue_modes.get(
             int(self.get_selected_router_id() or 0)
         )
-        if pending_rescue_mode:
-            self.rescue_mode_switch.set_busy(
-                pending_rescue_mode
-            )
-        else:
-            self.rescue_mode_switch.set_context(rescue_context)
+        if rescue_visible:
+            if pending_rescue_mode:
+                self.rescue_mode_switch.set_busy(
+                    pending_rescue_mode
+                )
+            else:
+                self.rescue_mode_switch.set_context(rescue_context)
 
         if hasattr(self, "wifi_tab"):
             self.wifi_tab.set_router(
@@ -6363,6 +6076,21 @@ class MainWindow(QMainWindow):
         self.show_ports(
             result.ports
         )
+
+    @staticmethod
+    def compatibility_feature_state(
+        result: object,
+        feature_key: str,
+    ) -> str:
+        profile = getattr(result, "compatibility_profile", None)
+        if not isinstance(profile, dict):
+            return "unknown"
+        for feature in profile.get("features") or []:
+            if not isinstance(feature, dict):
+                continue
+            if str(feature.get("key") or "") == str(feature_key):
+                return str(feature.get("state") or "unknown")
+        return "unknown"
 
 
     def change_rescue_mode(
@@ -6669,111 +6397,7 @@ class MainWindow(QMainWindow):
         )
 
     def disconnect_selected_router(self) -> None:
-        router_id = self.get_selected_router_id()
-
-        if router_id is None:
-            return
-
-        router = self.database.get_router(
-            router_id
-        )
-
-        if router is None:
-            QMessageBox.warning(
-                self,
-                "Роутер не найден",
-                "Запись отсутствует в базе данных.",
-            )
-            return
-
-        try:
-            self.database.update_router_status(
-                router_id=router_id,
-                status=False,
-                touch_last_seen=False,
-            )
-            self.persisted_router_status[
-                router_id
-            ] = False
-
-        except sqlite3.Error as error:
-            QMessageBox.critical(
-                self,
-                "Ошибка базы данных",
-                str(error),
-            )
-            return
-
-        monitor = self.router_monitors.pop(
-            router_id,
-            None,
-        )
-
-        self.connection_results.pop(
-            router_id,
-            None,
-        )
-        self.pending_rescue_modes.pop(router_id, None)
-        self.clear_router_traffic_history(router_id)
-        self.last_monitor_results.pop(router_id, None)
-        self.developer_mode_by_router.pop(
-            router_id,
-            None,
-        )
-
-        self.set_router_content_connected(False)
-        self.sync_developer_mode_for_selected_router()
-
-        if monitor is not None:
-            # Не вызываем wait(3000) и deleteLater() здесь.
-            # Текущий HTTP-запрос может завершаться дольше
-            # трёх секунд. Поток остаётся сохранённым до
-            # настоящего сигнала QThread.finished.
-            self.stopping_router_monitors[
-                router_id
-            ] = monitor
-
-            # Обновления от уже отключаемого монитора больше
-            # не должны возвращать рабочий интерфейс.
-            try:
-                monitor.updated.disconnect(
-                    self.connection_completed
-                )
-            except (RuntimeError, TypeError):
-                pass
-
-            monitor.stop()
-
-        for router_item in self.routers:
-            if int(router_item.get("id", -1)) == router_id:
-                router_item["status"] = 0
-                break
-
-        self.set_router_item_disconnected(
-            router_id
-        )
-
-        self.status_label.setText(
-            "● Отключено"
-        )
-        self.connected_address_label.setText(
-            "Фактический адрес: —\n"
-            "Подключение: —"
-        )
-        self.clear_router_state()
-
-        self.set_router_monitor_ui_state(
-            "stopping"
-            if monitor is not None
-            else "disconnected"
-        )
-
-        self.sync_developer_mode_for_selected_router()
-
-        self.statusBar().showMessage(
-            f"Роутер «{router['name']}» отключён",
-            5000,
-        )
+        self.router_connection_controller.disconnect_selected()
 
     @staticmethod
     def _format_connection_method(
@@ -6824,72 +6448,16 @@ class MainWindow(QMainWindow):
         is_online: bool,
         checked_address: str,
     ) -> None:
-        if not self.reachability_checkbox.isChecked():
-            return
-
-        previous = self.router_reachability.get(
-            router_id
-        )
-
-        authenticated_result = self.connection_results.get(
-            router_id
-        )
-        authenticated_online = bool(
-            authenticated_result is not None
-            and getattr(authenticated_result, "success", False)
-        )
-        previous_effective = bool(
-            previous is True or authenticated_online
-        )
-
-        self.router_reachability[
-            router_id
-        ] = is_online
-
-        if checked_address:
-            self.router_reachable_address[
-                router_id
-            ] = checked_address
-        else:
-            self.router_reachable_address.pop(
-                router_id,
-                None,
-            )
-
-        self.update_router_item_status(
+        self.router_connection_controller.reachability_changed(
             router_id,
-            bool(is_online or authenticated_online),
+            is_online,
+            checked_address,
         )
-
-        # При включённой отдельной проверке статус списка
-        # обновляется независимо от подключения мониторинга.
-        effective_online = bool(
-            is_online or authenticated_online
-        )
-        if previous_effective != effective_online:
-            router = self.database.get_router(
-                router_id
-            )
-
-            if router is not None:
-                state_text = (
-                    "доступен"
-                    if effective_online
-                    else "недоступен"
-                )
-                self.statusBar().showMessage(
-                    f"Роутер «{router['name']}» "
-                    f"{state_text}",
-                    3000,
-                )
 
     def refresh_router_statuses(
         self,
     ) -> None:
-        self.router_status_worker.set_routers(
-            self.routers
-        )
-        self.router_status_worker.request_refresh()
+        self.router_connection_controller.refresh_statuses()
 
     def set_router_item_disconnected(
         self,
@@ -6934,89 +6502,17 @@ class MainWindow(QMainWindow):
         self,
         router_id: int,
     ) -> None:
-        """
-        Сигнал приходит из finally метода run().
-
-        Здесь нельзя удалять QThread: после emit() метод run()
-        ещё должен окончательно вернуться. Удаление выполняется
-        только обработчиком встроенного сигнала finished.
-        """
-        self.disable_developer_mode_for_router(
-            router_id
-        )
-        self.pending_rescue_modes.pop(router_id, None)
-
-        # Самопроизвольная остановка всё ещё удаляет монитор
-        # из активного списка, но объект сохраняется до finished.
-        monitor = self.router_monitors.pop(
-            router_id,
-            None,
-        )
-
-        if monitor is not None:
-            self.stopping_router_monitors[
-                router_id
-            ] = monitor
-
-        current_router_id = (
-            self.get_selected_router_id()
-        )
-
-        if current_router_id == router_id:
-            self.connection_results.pop(
-                router_id,
-                None,
-            )
-            self.clear_router_state()
-            self.status_label.setText(
-                "● Не подключён"
-            )
-            self.connected_address_label.setText(
-                "Фактический адрес: —\n"
-                "Подключение: —"
-            )
-
-            self.set_router_monitor_ui_state("stopping")
+        self.router_connection_controller.monitor_stopped(router_id)
 
     def router_monitor_finished(
         self,
         router_id: int,
-        monitor: RouterMonitor,
+        monitor: object,
     ) -> None:
-        """
-        Удаляет RouterMonitor только после полного завершения
-        системного потока QThread.
-        """
-        active = self.router_monitors.get(
-            router_id
+        self.router_connection_controller.monitor_finished(
+            router_id,
+            monitor,
         )
-
-        if active is monitor:
-            self.router_monitors.pop(
-                router_id,
-                None,
-            )
-
-        stopping = self.stopping_router_monitors.get(
-            router_id
-        )
-
-        if stopping is monitor:
-            self.stopping_router_monitors.pop(
-                router_id,
-                None,
-            )
-
-        monitor.deleteLater()
-
-        if self.get_selected_router_id() == router_id:
-            if router_id in self.router_monitors:
-                self.set_router_monitor_ui_state("connecting")
-            else:
-                self.set_router_monitor_ui_state("disconnected")
-        else:
-            self._update_router_management_actions()
-            self._update_global_router_actions()
 
     def update_router_item_status(
         self,
@@ -7095,6 +6591,13 @@ class MainWindow(QMainWindow):
             *self.router_monitors.values(),
             *self.stopping_router_monitors.values(),
         ]
+        firmware_worker = getattr(
+            self,
+            "firmware_inspection_worker",
+            None,
+        )
+        if firmware_worker is not None:
+            candidates.append(firmware_worker)
         unique: list[object] = []
         seen: set[int] = set()
 

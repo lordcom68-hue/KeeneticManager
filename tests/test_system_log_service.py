@@ -20,8 +20,10 @@ class FakeTransport:
     def __init__(self, payload: Any) -> None:
         self.payload = payload
         self.request_kwargs: dict[str, Any] = {}
+        self.request_count = 0
 
     def request(self, **kwargs: Any) -> FakeResponse:
+        self.request_count += 1
         self.request_kwargs = dict(kwargs)
         return FakeResponse(self.payload)
 
@@ -105,6 +107,7 @@ class SystemLogServiceTests(unittest.TestCase):
             client.transport.request_kwargs["path"],
             "/rci/",
         )
+        self.assertTrue(service.router_log_supported)
 
     def test_read_merges_persisted_application_operations(self) -> None:
         client = FakeClient(self.payload())
@@ -149,6 +152,59 @@ class SystemLogServiceTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(len(entries), 1)
         self.assertIn("Показаны события Keenetic Manager", message)
+
+    def test_unsupported_log_command_is_not_repeated(self) -> None:
+        client = FakeClient([{"error": "not found"}])
+        client.extract_batch_rci_errors = lambda payload: [
+            'Core::Configurator: not found: "show/log"'
+        ]
+        service = SystemLogService(client)
+
+        first = service.read(500)
+        second = service.read(500)
+
+        self.assertFalse(first[0])
+        self.assertFalse(second[0])
+        self.assertFalse(service.router_log_supported)
+        self.assertEqual(client.transport.request_count, 1)
+        self.assertIn("не поддерживается", second[1])
+
+    def test_cached_unsupported_log_skips_request_after_restart(self) -> None:
+        client = FakeClient(self.payload())
+        client.compatibility_service = SimpleNamespace(
+            profile=SimpleNamespace(
+                feature_state=lambda key: (
+                    "unavailable" if key == "system_log" else "unknown"
+                )
+            )
+        )
+
+        success, message, entries = SystemLogService(client).read(500)
+
+        self.assertFalse(success)
+        self.assertEqual(entries, [])
+        self.assertEqual(client.transport.request_count, 0)
+        self.assertIn("не поддерживается", message)
+
+    def test_new_firmware_resets_cached_unsupported_log_state(self) -> None:
+        client = FakeClient(self.payload())
+        state = {"value": "unavailable"}
+        client.compatibility_service = SimpleNamespace(
+            profile=SimpleNamespace(
+                feature_state=lambda key: (
+                    state["value"] if key == "system_log" else "unknown"
+                )
+            )
+        )
+        service = SystemLogService(client)
+        self.assertFalse(service.router_log_supported)
+
+        state["value"] = "unknown"
+        service.sync_cached_support()
+        success, _message, _entries = service.read(500)
+
+        self.assertTrue(success)
+        self.assertEqual(client.transport.request_count, 1)
 
     def test_worker_routes_system_log_without_full_refresh(self) -> None:
         fake_client = SimpleNamespace(

@@ -675,6 +675,12 @@ class ClientsTabTests(unittest.TestCase):
             / "ui"
             / "main_window.py"
         ).read_text(encoding="utf-8")
+        controller_source = (
+            Path(__file__).resolve().parents[1]
+            / "ui"
+            / "controllers"
+            / "router_connection_controller.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("self.clients_tab = ClientsTab()", source)
         self.assertIn("self.clients_tab.set_networks(", source)
         self.assertIn("self.clients_tab.set_clients(", source)
@@ -685,7 +691,7 @@ class ClientsTabTests(unittest.TestCase):
         )
         self.assertIn(
             "monitor.wifi_client_access_completed.connect(",
-            source,
+            controller_source,
         )
 
 

@@ -5,10 +5,13 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from core.rci import DiagnosticCollector
 from core.services.diagnostics_service import DiagnosticsService
+from core.services.firmware_inspection_service import FirmwareInspectionService
+from tests.test_firmware_inspection_service import build_uimage
 
 
 class FakeDatabase:
@@ -74,6 +77,14 @@ class DiagnosticsServiceTests(unittest.TestCase):
                 '{"type":"ethernet_port_state","message":"ok"}\n',
                 encoding="utf-8",
             )
+            (root / "logs" / "crash_report.jsonl").write_text(
+                '{"context":"background_thread"}\n',
+                encoding="utf-8",
+            )
+            (root / "logs" / "fatal_python.log").write_text(
+                "fatal handler enabled\n",
+                encoding="utf-8",
+            )
             archive_path = service.create_offline_archive(
                 destination=root,
                 router_id=12,
@@ -91,18 +102,178 @@ class DiagnosticsServiceTests(unittest.TestCase):
                     "application_settings.json",
                     "database_schema.json",
                     "connection_state.json",
+                    "compatibility_profile.json",
+                    "firmware_catalog_summary.json",
+                    "router_self_check_summary.json",
+                    "router_self_check_history.json",
                 }
                 self.assertFalse(required - names)
                 self.assertIn(
                     "logs/operation_history_router_12.jsonl",
                     names,
                 )
+                self.assertIn("logs/crash_report.jsonl", names)
+                self.assertIn("logs/fatal_python.log", names)
 
                 router_record = archive.read(
                     "router_record.json"
                 ).decode("utf-8")
                 self.assertNotIn("must-not-leak", router_record)
                 self.assertIn("[REDACTED]", router_record)
+                firmware_summary = json.loads(
+                    archive.read("firmware_catalog_summary.json")
+                )
+                self.assertFalse(
+                    firmware_summary["privacy"]["contains_local_paths"]
+                )
+
+    def test_archive_contains_anonymized_router_self_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = root / "history"
+            history.mkdir()
+            (history / "self_check_router_12.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "overall_status": "warning",
+                        "checks": [
+                            {
+                                "key": "keendns_https",
+                                "status": "warning",
+                                "summary": "Адрес не отвечает.",
+                            }
+                        ],
+                        "privacy": {
+                            "contains_addresses": False,
+                            "contains_credentials": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (history / "self_check_history_router_12.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "results": [{"overall_status": "warning"}],
+                        "privacy": {"contains_addresses": False},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = DiagnosticsService(
+                database=FakeDatabase(),  # type: ignore[arg-type]
+                history_root=history,
+                logs_root=root / "logs",
+            )
+
+            archive_path = service.create_offline_archive(
+                destination=root,
+                router_id=12,
+            )
+            with zipfile.ZipFile(archive_path) as archive:
+                summary = json.loads(
+                    archive.read("router_self_check_summary.json")
+                )
+                saved_history = json.loads(
+                    archive.read("router_self_check_history.json")
+                )
+
+            self.assertEqual(summary["overall_status"], "warning")
+            self.assertFalse(summary["privacy"]["contains_addresses"])
+            self.assertEqual(len(saved_history["results"]), 1)
+            self.assertFalse(
+                saved_history["privacy"]["contains_addresses"]
+            )
+
+    def test_clear_local_data_removes_saved_self_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = root / "history"
+            history.mkdir()
+            self_check = history / "self_check_router_12.json"
+            self_check.write_text("{}", encoding="utf-8")
+            self_check_history = history / "self_check_history_router_12.json"
+            self_check_history.write_text("{}", encoding="utf-8")
+            service = DiagnosticsService(
+                database=FakeDatabase(),  # type: ignore[arg-type]
+                history_root=history,
+                logs_root=root / "logs",
+            )
+
+            service.clear_local_data(12)
+
+            self.assertFalse(self_check.exists())
+            self.assertFalse(self_check_history.exists())
+
+    def test_offline_archive_contains_last_compatibility_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = DiagnosticsService(
+                database=FakeDatabase(),  # type: ignore[arg-type]
+                history_root=root / "history",
+                logs_root=root / "logs",
+            )
+            archive_path = service.create_offline_archive(
+                destination=root,
+                router_id=12,
+                last_result=SimpleNamespace(
+                    success=False,
+                    compatibility_profile={
+                        "level": "limited",
+                        "level_label": "Ограниченная поддержка",
+                        "features": [
+                            {
+                                "key": "wifi_management",
+                                "state": "unavailable",
+                            }
+                        ],
+                    },
+                ),
+            )
+
+            with zipfile.ZipFile(archive_path) as archive:
+                profile = json.loads(
+                    archive.read("compatibility_profile.json")
+                )
+
+        self.assertEqual(profile["level"], "limited")
+        self.assertEqual(
+            profile["features"][0]["key"],
+            "wifi_management",
+        )
+
+    def test_archive_firmware_summary_omits_local_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            firmware_path = root / "private" / "candidate.bin"
+            firmware_path.parent.mkdir()
+            firmware_path.write_bytes(build_uimage(ported=False))
+            service = DiagnosticsService(
+                database=FakeDatabase(),  # type: ignore[arg-type]
+                history_root=root / "history",
+                logs_root=root / "logs",
+            )
+            service.firmware_catalog_service.upsert_inspection(
+                FirmwareInspectionService.inspect(firmware_path)
+            )
+
+            archive_path = service.create_offline_archive(
+                destination=root,
+                router_id=12,
+            )
+
+            with zipfile.ZipFile(archive_path) as archive:
+                summary = json.loads(
+                    archive.read("firmware_catalog_summary.json")
+                )
+            encoded = json.dumps(summary, ensure_ascii=False)
+
+            self.assertEqual(summary["record_count"], 1)
+            self.assertEqual(summary["records"][0]["file_name"], "candidate.bin")
+            self.assertNotIn(str(root), encoded)
+            self.assertNotIn("file_path", encoded)
 
     def test_offline_archive_loads_persisted_history_cache_and_statuses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

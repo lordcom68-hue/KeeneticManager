@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "privacy": {
+    "synthetic": true,
+    "contains_credentials": false,
+    "contains_real_addresses": false
+  },
+  "responses": {
+    "system": {
+      "hostname": "fixture-router",
+      "cpuload": 12,
+      "memory": "128/256"
+    },
+    "internet_status": {
+      "status": "up"
+    },
+    "interface_runtime": {
+      "ISP": {
+        "id": "ISP",
+        "connected": true
+      }
+    },
+    "interface_config": {
+      "ip": {
+        "global": {
+          "order": ["ISP"]
+        }
+      }
+    },
+    "ping_config": {
+      "ISP": {
+        "enabled": true
+      }
+    },
+    "ping_status": {
+      "ISP": {
+        "status": "up"
+      }
+    },
+    "associations": [
+      {
+        "mac": "02:00:00:00:00:01",
+        "interface": "WifiMaster0/AccessPoint0"
+      }
+    ],
+    "hotspot": {
+      "hosts": [
+        {
+          "mac": "02:00:00:00:00:01",
+          "name": "fixture-client"
+        }
+      ]
+    },
+    "usb": {}
+  }
+}

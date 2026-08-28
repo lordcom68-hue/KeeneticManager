@@ -9,14 +9,20 @@ from core.app_version import APP_NAME, APP_VERSION
 from core.database import Database
 from core.rci import DiagnosticCollector, RouterCapabilities
 from core.rci.diagnostics import sanitize_value
+from core.services.firmware_catalog_service import FirmwareCatalogService
 from core.services.runtime_paths import (
+    CRASH_LOG_PATH,
     DIAGNOSTICS_HISTORY_DIR,
+    FATAL_LOG_PATH,
     LOGS_DIR,
     PROJECT_ROOT,
     legacy_router_history_path,
     legacy_router_snapshot_cache_path,
     router_history_path,
+    router_compatibility_cache_path,
     router_operation_history_path,
+    router_self_check_history_path,
+    router_self_check_path,
     router_snapshot_cache_path,
 )
 
@@ -33,6 +39,7 @@ class DiagnosticsService:
         database: Database | None = None,
         history_root: Path | None = None,
         logs_root: Path | None = None,
+        firmware_catalog_service: FirmwareCatalogService | None = None,
     ) -> None:
         # База открывается лениво: сохранение фонового snapshot-cache
         # не должно запускать миграции SQLite каждые 30 секунд.
@@ -46,6 +53,19 @@ class DiagnosticsService:
             Path(logs_root)
             if logs_root is not None
             else LOGS_DIR
+        )
+        self.firmware_catalog_service = (
+            firmware_catalog_service
+            if firmware_catalog_service is not None
+            else FirmwareCatalogService(
+                path=(
+                    Path(history_root).parent
+                    / "cache"
+                    / "firmware_catalog.json"
+                    if history_root is not None
+                    else None
+                )
+            )
         )
 
     def get_database(self) -> Database:
@@ -141,6 +161,14 @@ class DiagnosticsService:
                 ),
                 operation_path.with_suffix(".jsonl.1"),
                 operation_path,
+                router_self_check_path(
+                    router_id,
+                    root=history_root,
+                ),
+                router_self_check_history_path(
+                    router_id,
+                    root=history_root,
+                ),
             ]
         )
 
@@ -272,6 +300,16 @@ class DiagnosticsService:
                 self.logs_root / f"priority_debug_router_{suffix}.log",
                 self.logs_root / "priority_debug.log",
                 self.logs_root / "hardware_guard.log",
+                (
+                    self.logs_root / CRASH_LOG_PATH.name
+                    if self.logs_root != LOGS_DIR
+                    else CRASH_LOG_PATH
+                ),
+                (
+                    self.logs_root / FATAL_LOG_PATH.name
+                    if self.logs_root != LOGS_DIR
+                    else FATAL_LOG_PATH
+                ),
                 router_operation_history_path(
                     router_id,
                     root=self.logs_root,
@@ -400,10 +438,15 @@ class DiagnosticsService:
         collector: DiagnosticCollector | None = None,
         metadata: dict[str, Any] | None = None,
         capabilities: RouterCapabilities | None = None,
+        compatibility_profile: Any = None,
         application_settings: dict[str, Any] | None = None,
         connection_state: dict[str, Any] | None = None,
     ) -> Path:
         diagnostics = collector or DiagnosticCollector()
+        if compatibility_profile is None:
+            compatibility_profile = self.load_compatibility_profile(
+                router_id
+            )
         database = self.get_database()
         router_record = (
             database.get_router(int(router_id))
@@ -525,6 +568,18 @@ class DiagnosticsService:
                     database.get_schema_snapshot()
                 ),
                 "connection_state.json": state,
+                "compatibility_profile.json": self._as_mapping(
+                    compatibility_profile
+                ),
+                "firmware_catalog_summary.json": (
+                    self.firmware_catalog_service.diagnostic_summary()
+                ),
+                "router_self_check_summary.json": (
+                    self.load_self_check_summary(router_id)
+                ),
+                "router_self_check_history.json": (
+                    self.load_self_check_history(router_id)
+                ),
             },
         )
 
@@ -559,11 +614,19 @@ class DiagnosticsService:
                 "last_result_message": last_result_message,
             },
         )
+        compatibility_profile = self.load_compatibility_profile(
+            router_id
+        ) or getattr(
+            last_result,
+            "compatibility_profile",
+            None,
+        )
 
         return self.create_archive(
             destination=destination,
             router_id=router_id,
             collector=collector,
+            compatibility_profile=compatibility_profile,
             application_settings=application_settings,
             connection_state={
                 "router_connected": False,
@@ -579,6 +642,58 @@ class DiagnosticsService:
                 ),
             },
         )
+
+    @staticmethod
+    def _as_mapping(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            result = to_dict()
+            if isinstance(result, dict):
+                return result
+        return {}
+
+    def load_compatibility_profile(
+        self,
+        router_id: int | None,
+    ) -> dict[str, Any]:
+        if self.history_root != DIAGNOSTICS_HISTORY_DIR:
+            return {}
+        path = router_compatibility_cache_path(router_id)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return dict(value) if isinstance(value, dict) else {}
+
+    def load_self_check_summary(
+        self,
+        router_id: int | None,
+    ) -> dict[str, Any]:
+        path = router_self_check_path(
+            router_id,
+            root=self.history_root,
+        )
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return dict(value) if isinstance(value, dict) else {}
+
+    def load_self_check_history(
+        self,
+        router_id: int | None,
+    ) -> dict[str, Any]:
+        path = router_self_check_history_path(
+            router_id,
+            root=self.history_root,
+        )
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return dict(value) if isinstance(value, dict) else {}
 
     def clear_local_data(self, router_id: int | None) -> None:
         for path in self.local_data_paths(

@@ -5,16 +5,27 @@ from pathlib import Path
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
-    def test_release_version_is_106_beta(self) -> None:
+    def test_release_version_and_packaging_are_synchronized(self) -> None:
         from core.app_version import (
             APP_RELEASE_STATUS,
             APP_RELEASE_TRACK,
             APP_VERSION,
         )
 
-        self.assertEqual(APP_VERSION, "1.0.6-beta")
+        self.assertEqual(APP_VERSION, "1.0.12-beta")
         self.assertEqual(APP_RELEASE_STATUS, "beta")
         self.assertEqual(APP_RELEASE_TRACK, "beta")
+        root = Path(__file__).resolve().parents[1]
+        version_info = (
+            root / "packaging" / "windows_version_info.txt"
+        ).read_text(encoding="utf-8")
+        installer = (
+            root / "packaging" / "KeeneticManager.iss"
+        ).read_text(encoding="utf-8")
+        self.assertIn("filevers=(1, 0, 12, 0)", version_info)
+        self.assertIn(f"FileVersion', '{APP_VERSION}'", version_info)
+        self.assertIn(f"ProductVersion', '{APP_VERSION}'", version_info)
+        self.assertIn(f'#define MyAppVersion "{APP_VERSION}"', installer)
 
     def test_release_builders_are_versioned_and_portable(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -23,6 +34,12 @@ class ReleaseIntegrityTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         release_builder = (
             root / "tools" / "build_release.ps1"
+        ).read_text(encoding="utf-8")
+        release_verifier = (
+            root / "tools" / "verify_release.ps1"
+        ).read_text(encoding="utf-8")
+        upgrade_verifier = (
+            root / "tools" / "verify_upgrade.ps1"
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("1.0.0-beta1-clean", source_builder)
@@ -34,6 +51,19 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertIn("portable.flag", release_builder)
         self.assertIn("portable_profile.json", release_builder)
         self.assertIn("Compress-Archive", release_builder)
+        self.assertIn("verify_release.ps1", release_builder)
+        self.assertIn("verify_release.ps1", source_builder)
+        self.assertIn("verify_upgrade.ps1", source_builder)
+        self.assertIn("upgrade_fixture.py", source_builder)
+        self.assertIn("KEENETIC_MANAGER_RELEASE_SMOKE_TEST_MS", release_verifier)
+        self.assertIn("Portable smoke test passed", release_verifier)
+        self.assertIn("Installer smoke test passed", release_verifier)
+        self.assertIn("Assert-EmptyRouterDatabase", release_verifier)
+        self.assertIn("previous_uninstall_entry.reg", release_verifier)
+        self.assertIn("/NOCLOSEAPPLICATIONS", release_verifier)
+        self.assertIn("User profile survived uninstall", upgrade_verifier)
+        self.assertIn("previous_uninstall_entry.reg", upgrade_verifier)
+        self.assertIn("/NOCLOSEAPPLICATIONS", upgrade_verifier)
 
     def test_router_http_is_centralized_in_rci_transport(self) -> None:
         root = Path(__file__).resolve().parents[1] / "core"
@@ -118,15 +148,27 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertIn("credential_ref text", source)
 
     def test_main_window_reads_secret_only_for_manual_connection(self) -> None:
-        source_path = (
+        main_window_path = (
             Path(__file__).resolve().parents[1]
             / "ui"
             / "main_window.py"
         )
-        source = source_path.read_text(encoding="utf-8")
+        controller_path = (
+            Path(__file__).resolve().parents[1]
+            / "ui"
+            / "controllers"
+            / "router_connection_controller.py"
+        )
+        main_source = main_window_path.read_text(encoding="utf-8")
+        controller_source = controller_path.read_text(encoding="utf-8")
 
         self.assertEqual(
-            source.count("include_password=True"),
+            main_source.count("include_password=True"),
+            0,
+            "Главное окно не должно самостоятельно читать пароль",
+        )
+        self.assertEqual(
+            controller_source.count("include_password=True"),
             1,
             "Пароль должен извлекаться только перед ручным подключением",
         )
@@ -138,6 +180,8 @@ class ReleaseIntegrityTests(unittest.TestCase):
             "migrate_legacy_database",
             "router_history_path",
             "router_snapshot_cache_path",
+            "router_self_check_path",
+            "router_self_check_history_path",
             "legacy_router_history_path",
             "legacy_router_snapshot_cache_path",
         )
@@ -175,6 +219,74 @@ class ReleaseIntegrityTests(unittest.TestCase):
             callable(getattr(RciTransport, "record_monitor_state", None)),
             "RciTransport не содержит record_monitor_state",
         )
+
+    def test_router_self_check_exports_read_only_contract(self) -> None:
+        from core.services.router_self_check_service import (
+            RouterSelfCheckResult,
+            RouterSelfCheckService,
+        )
+
+        self.assertTrue(callable(RouterSelfCheckResult))
+        self.assertTrue(callable(getattr(RouterSelfCheckService, "run", None)))
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "services"
+            / "router_self_check_service.py"
+        ).read_text(encoding="utf-8")
+        for marker in ("set_enabled", "delete_", "create_network", "POST /rci"):
+            self.assertNotIn(marker, source)
+
+    def test_large_ui_and_client_delegate_new_feature_responsibilities(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[1]
+        main_window = (root / "ui" / "main_window.py").read_text(
+            encoding="utf-8"
+        )
+        client = (root / "core" / "keenetic_client.py").read_text(
+            encoding="utf-8"
+        )
+        connection_controller = (
+            root
+            / "ui"
+            / "controllers"
+            / "router_connection_controller.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("RouterSelfCheckController", main_window)
+        self.assertNotIn("def run_router_self_check", main_window)
+        self.assertIn("RouterConnectionController", main_window)
+        self.assertNotIn("RouterMonitor(", main_window)
+        self.assertIn("self.monitor_factory(", connection_controller)
+        self.assertIn("self.stopping_monitors", connection_controller)
+        self.assertIn("RouterRefreshService", client)
+        self.assertNotIn("def _cached_refresh_value", client)
+
+    def test_recorded_keeneticos_fixture_is_packaged_and_anonymized(self) -> None:
+        fixture = (
+            Path(__file__).resolve().parents[1]
+            / "tests"
+            / "fixtures"
+            / "keeneticos_refresh_snapshot.json"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"synthetic": true', fixture)
+        self.assertNotIn("192.168.", fixture)
+        self.assertNotIn('"password"', fixture.casefold())
+
+    def test_real_kn3711_fixture_is_read_only_and_anonymized(self) -> None:
+        fixture = (
+            Path(__file__).resolve().parents[1]
+            / "tests"
+            / "fixtures"
+            / "kn3711_readonly_profile.json"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"capture_source": "read_only_real_router"', fixture)
+        self.assertIn('"configuration_changed": false', fixture)
+        self.assertNotIn("192.168.", fixture)
+        self.assertNotIn('"password"', fixture.casefold())
 
     def test_connection_result_exports_monitoring_contract(self) -> None:
         from dataclasses import fields
@@ -230,8 +342,11 @@ class ReleaseIntegrityTests(unittest.TestCase):
         import inspect
 
         from core.keenetic_client import KeeneticClient
+        from core.services.connection_result_builder_service import (
+            ConnectionResultBuilderService,
+        )
 
-        result_source = inspect.getsource(KeeneticClient.build_result)
+        result_source = inspect.getsource(ConnectionResultBuilderService.build)
         connect_source = inspect.getsource(KeeneticClient.connect_to_router)
 
         self.assertIn(
@@ -348,6 +463,11 @@ class ReleaseIntegrityTests(unittest.TestCase):
             "normalize_statistics",
             "interface_is_enabled",
             "interface_is_up",
+            "extract_configured_ipv4",
+            "normalize_ipv4_text",
+            "extract_configured_mac_settings",
+            "validate_manual_mac",
+            "build_interface_mac_command",
         )
 
         self.assertTrue(callable(InterfaceSnapshot))
@@ -363,6 +483,20 @@ class ReleaseIntegrityTests(unittest.TestCase):
                 ),
                 f"InterfaceService не содержит {name}",
             )
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "keenetic_client.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "return InterfaceService.extract_configured_ipv4(address_config)",
+            source,
+        )
+        self.assertIn(
+            "return self.interface_service.build_interface_mac_command(",
+            source,
+        )
 
     def test_port_status_service_owns_safe_physical_port_mutations(self) -> None:
         from core.services.port_status_service import (
@@ -432,9 +566,19 @@ class ReleaseIntegrityTests(unittest.TestCase):
             / "core"
             / "keenetic_client.py"
         ).read_text(encoding="utf-8")
+        details_source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "services"
+            / "connection_details_service.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("self.traffic_service = TrafficService(self)", source)
-        self.assertIn("self.traffic_service.measure_connection(", source)
+        self.assertIn(
+            "self.client.traffic_service.measure_connection(",
+            details_source,
+        )
         self.assertNotIn("delta * 8.0 / elapsed", source)
+        self.assertNotIn("delta * 8.0 / elapsed", details_source)
 
         wifi_source = (
             Path(__file__).resolve().parents[1]
@@ -444,6 +588,27 @@ class ReleaseIntegrityTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("traffic_service.calculate_counter_speeds(", wifi_source)
         self.assertNotIn("rx_delta * 8.0", wifi_source)
+
+    def test_usb_service_owns_optional_usb_rci_detection(self) -> None:
+        from core.services.usb_service import UsbService
+
+        for name in (
+            "get_data",
+            "detect_capabilities_from_version",
+            "detect_rci_endpoint",
+            "probe_optional_rci_endpoint",
+            "reset",
+        ):
+            self.assertTrue(callable(getattr(UsbService, name, None)), name)
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "keenetic_client.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("self.usb_service = UsbService(self)", source)
+        self.assertIn("return self.usb_service.get_data(", source)
+        self.assertNotIn('path=f"/rci/{endpoint}"', source)
 
     def test_system_status_service_owns_device_metric_calculation(self) -> None:
         from core.services.system_status_service import (
@@ -467,35 +632,57 @@ class ReleaseIntegrityTests(unittest.TestCase):
             / "core"
             / "keenetic_client.py"
         ).read_text(encoding="utf-8")
+        builder_source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "services"
+            / "connection_result_builder_service.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("self.system_status_service = SystemStatusService()", source)
-        self.assertIn("self.system_status_service.build(", source)
+        self.assertIn(
+            "self.client.system_status_service.build(",
+            builder_source,
+        )
         self.assertNotIn("used_memory = max(", source)
+        self.assertNotIn("used_memory = max(", builder_source)
 
     def test_keenetic_client_delegates_interface_actions(self) -> None:
-        source = (
+        client_source = (
             Path(__file__).resolve().parents[1]
             / "core"
             / "keenetic_client.py"
         ).read_text(encoding="utf-8")
+        refresh_source = (
+            Path(__file__).resolve().parents[1]
+            / "core"
+            / "services"
+            / "router_refresh_service.py"
+        ).read_text(encoding="utf-8")
 
         self.assertIn(
             "self.interface_service = InterfaceService(self)",
-            source,
+            client_source,
         )
-        self.assertIn("self.interface_service.read_runtime()", source)
-        self.assertIn("loader=self.interface_service.read_config", source)
+        self.assertIn(
+            "self.client.interface_service.read_runtime()",
+            refresh_source,
+        )
+        self.assertIn(
+            "loader=self.client.interface_service.read_config",
+            refresh_source,
+        )
         self.assertIn(
             "return self.interface_service.set_enabled",
-            source,
+            client_source,
         )
         self.assertIn(
             "return self.interface_service.reconnect",
-            source,
+            client_source,
         )
 
         self.assertNotIn(
             "/rci/interface/{action}",
-            source,
+            client_source,
             "HTTP-управление интерфейсом осталось в KeeneticClient",
         )
 
@@ -517,9 +704,22 @@ class ReleaseIntegrityTests(unittest.TestCase):
 
 
     def test_wired_internet_service_exports_required_contract(self) -> None:
+        from core.services.cable_protocol_change_service import (
+            CableProtocolChangeService,
+        )
+        from core.services.dedicated_wan_service import (
+            DedicatedWanService,
+        )
+        from core.services.wired_connection_dispatcher import (
+            WiredConnectionDispatcher,
+        )
         from core.services.wired_internet_service import (
             WiredInternetService,
         )
+        from core.services.wired_ipoe_service import WiredIpoeService
+        from core.services.wired_l2tp_service import WiredL2tpService
+        from core.services.wired_pppoe_service import WiredPppoeService
+        from core.services.wired_pptp_service import WiredPptpService
 
         required = (
             "create_cable_internet",
@@ -545,6 +745,132 @@ class ReleaseIntegrityTests(unittest.TestCase):
                         None,
                     )
                 ),
+                name,
+            )
+
+        self.assertTrue(callable(WiredConnectionDispatcher))
+        for name in (
+            "create",
+            "protocol_type",
+            "connection_type",
+            "interface_settings",
+        ):
+            self.assertTrue(
+                callable(
+                    getattr(
+                        WiredConnectionDispatcher,
+                        name,
+                        None,
+                    )
+                ),
+                name,
+            )
+
+        for name in (
+            "create_dedicated_cable_internet",
+            "delete_dedicated_wan",
+        ):
+            self.assertTrue(
+                callable(getattr(DedicatedWanService, name, None)),
+                name,
+            )
+
+        for service, names in (
+            (WiredIpoeService, ("create_wired_ipoe", "delete_wired_ipoe")),
+            (
+                WiredPppoeService,
+                ("create_wired_pppoe", "delete_wired_pppoe"),
+            ),
+            (
+                WiredPptpService,
+                ("create_wired_pptp", "delete_wired_pptp"),
+            ),
+            (
+                WiredL2tpService,
+                ("create_wired_l2tp", "delete_wired_l2tp"),
+            ),
+            (
+                CableProtocolChangeService,
+                ("change_cable_internet_protocol",),
+            ),
+        ):
+            for name in names:
+                self.assertTrue(callable(getattr(service, name, None)), name)
+
+    def test_connection_creation_options_service_contract(self) -> None:
+        from core.services.connection_creation_options_service import (
+            ConnectionCreationOptionsService,
+        )
+
+        self.assertTrue(callable(ConnectionCreationOptionsService))
+        self.assertTrue(
+            callable(
+                getattr(
+                    ConnectionCreationOptionsService,
+                    "build_connection_creation_options",
+                    None,
+                )
+            )
+        )
+
+    def test_connection_classification_service_contract(self) -> None:
+        from core.services.connection_classification_service import (
+            ConnectionClassificationService,
+        )
+
+        for name in (
+            "is_internet_candidate",
+            "connection_display_name",
+            "connection_transport_type",
+            "format_physical_port",
+            "build_physical_port_map",
+            "collect_connection_candidates",
+            "connection_is_active",
+            "filter_real_internet_connections",
+            "is_real_wan_connection",
+        ):
+            self.assertTrue(
+                callable(getattr(ConnectionClassificationService, name, None)),
+                name,
+            )
+
+    def test_connection_details_service_contract(self) -> None:
+        from core.services.connection_details_service import (
+            ConnectionDetailsService,
+        )
+
+        for name in (
+            "apply_connection_delete_context",
+            "clear_connection_delete_context",
+            "enrich_wired_pppoe_details",
+            "enrich_wired_pptp_details",
+            "enrich_wired_l2tp_details",
+            "enrich_cable_protocol_change_details",
+            "enrich_connection_details",
+            "enrich_basic_interface_fields",
+            "extract_ipv6_address",
+            "normalize_connection_detail",
+            "extract_ipv6_details",
+        ):
+            self.assertTrue(
+                callable(getattr(ConnectionDetailsService, name, None)),
+                name,
+            )
+
+    def test_wired_deletion_inspection_service_contract(self) -> None:
+        from core.services.wired_deletion_inspection_service import (
+            WiredDeletionInspectionService,
+        )
+
+        for name in (
+            "inspect_dedicated_wan_deletion",
+            "inspect_wired_pppoe_deletion",
+            "inspect_wired_pptp_deletion",
+            "inspect_wired_l2tp_deletion",
+            "inspect_wired_ipoe_deletion",
+        ):
+            self.assertTrue(
+                callable(getattr(WiredDeletionInspectionService, name, None)),
                 name,
             )
 
@@ -721,15 +1047,47 @@ class ReleaseIntegrityTests(unittest.TestCase):
             self.assertTrue(callable(getattr(PingCheckService, name, None)), name)
 
     def test_client_ping_check_methods_are_facades(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "core" / "keenetic_client.py").read_text(encoding="utf-8")
-        self.assertIn("self.ping_check_service = PingCheckService(self)", source)
-        self.assertIn("loader=self.ping_check_service.read_config", source)
-        self.assertIn("loader=self.ping_check_service.read_status", source)
-        self.assertIn("self.ping_check_service.enrich_connection(", source)
-        self.assertNotIn("История Ping Check в рамках текущего сеанса", source)
+        root = Path(__file__).resolve().parents[1]
+        client_source = (root / "core" / "keenetic_client.py").read_text(
+            encoding="utf-8"
+        )
+        details_source = (
+            root / "core" / "services" / "connection_details_service.py"
+        ).read_text(encoding="utf-8")
+        refresh_source = (
+            root / "core" / "services" / "router_refresh_service.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "self.ping_check_service = PingCheckService(self)",
+            client_source,
+        )
+        self.assertIn(
+            "loader=self.client.ping_check_service.read_config",
+            refresh_source,
+        )
+        self.assertIn(
+            "loader=self.client.ping_check_service.read_status",
+            refresh_source,
+        )
+        self.assertIn(
+            "self.client.ping_check_service.enrich_connection(",
+            details_source,
+        )
+        self.assertNotIn(
+            "История Ping Check в рамках текущего сеанса",
+            client_source,
+        )
 
     def test_wired_service_routes_ping_helpers_to_service(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "core" / "services" / "wired_internet_service.py").read_text(encoding="utf-8")
+        services = Path(__file__).resolve().parents[1] / "core" / "services"
+        source = "\n".join(
+            (services / name).read_text(encoding="utf-8")
+            for name in (
+                "wired_internet_service.py",
+                "wired_ipoe_service.py",
+                "cable_protocol_change_service.py",
+            )
+        )
         self.assertIn("self.client.ping_check_service.find_ping_check_profile", source)
         self.assertIn("self.client.ping_check_service.assigned_ping_profile", source)
 
@@ -753,7 +1111,19 @@ class ReleaseIntegrityTests(unittest.TestCase):
     def test_priority_logic_is_routed_to_service(self) -> None:
         root = Path(__file__).resolve().parents[1]
         client=(root / "core" / "keenetic_client.py").read_text(encoding="utf-8")
-        wired=(root / "core" / "services" / "wired_internet_service.py").read_text(encoding="utf-8")
+        wired_services = root / "core" / "services"
+        wired = "\n".join(
+            (wired_services / name).read_text(encoding="utf-8")
+            for name in (
+                "wired_internet_service.py",
+                "wired_ipoe_service.py",
+                "wired_pppoe_service.py",
+                "wired_pptp_service.py",
+                "wired_l2tp_service.py",
+                "cable_protocol_change_service.py",
+                "dedicated_wan_service.py",
+            )
+        )
         wireless=(root / "core" / "services" / "wireless_isp_service.py").read_text(encoding="utf-8")
         self.assertIn("self.priority_service = PriorityService(self)",client)
         self.assertIn("self.priority_service.merge_configured_global_connections",client)

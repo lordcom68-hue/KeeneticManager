@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from PySide6.QtCore import QThread, Signal
 
 from core.services.reachability import ReachabilityTracker
+from core.services.crash_report_service import report_background_exception
 
 
 class RouterStatusWorker(QThread):
@@ -136,9 +137,17 @@ class RouterStatusWorker(QThread):
                     break
 
                 router_id = int(router["id"])
-                probe_online, probe_address = self._check_router(
-                    router
-                )
+                try:
+                    probe_online, probe_address = self._check_router(
+                        router
+                    )
+                except Exception as error:
+                    report_background_exception(
+                        "router_status_worker.probe",
+                        error,
+                        details={"router_id": router_id},
+                    )
+                    probe_online, probe_address = False, ""
                 result = self._reachability.update(
                     router_id=router_id,
                     probe_online=probe_online,

@@ -5,6 +5,7 @@ from typing import Any
 
 from core.rci.diagnostics import sanitize_text
 from core.services.errors import KeeneticError
+from core.services.journal_event_analyzer import JournalEventAnalyzer
 
 
 class SystemLogService:
@@ -13,6 +14,9 @@ class SystemLogService:
     DEFAULT_MAX_LINES = 500
     MIN_LINES = 20
     MAX_LINES = 2000
+    UNSUPPORTED_MESSAGE = (
+        "Системный журнал не поддерживается этой версией KeeneticOS."
+    )
 
     LEVEL_ALIASES = {
         "emergency": "critical",
@@ -48,6 +52,28 @@ class SystemLogService:
 
     def __init__(self, client: Any) -> None:
         self.client = client
+        self._router_log_supported: bool | None = None
+        self.sync_cached_support()
+
+    @property
+    def router_log_supported(self) -> bool | None:
+        return self._router_log_supported
+
+    def sync_cached_support(self) -> None:
+        service = getattr(self.client, "compatibility_service", None)
+        profile = getattr(service, "profile", None)
+        feature_state = getattr(profile, "feature_state", None)
+        if not callable(feature_state):
+            return
+        state = str(feature_state("system_log") or "unknown")
+        if state == "unavailable":
+            self._router_log_supported = False
+        elif state == "supported":
+            self._router_log_supported = True
+        else:
+            # Новая прошивка получает новую сигнатуру профиля и должна
+            # пройти безопасную проверку заново.
+            self._router_log_supported = None
 
     def read(
         self,
@@ -55,6 +81,11 @@ class SystemLogService:
     ) -> tuple[bool, str, list[dict[str, Any]]]:
         limit = self.normalize_limit(max_lines)
         application_entries = self.application_entries(limit)
+        if self._router_log_supported is False:
+            return self._fallback_to_application_entries(
+                self.UNSUPPORTED_MESSAGE,
+                application_entries,
+            )
         try:
             response = self.client.transport.request(
                 method="POST",
@@ -90,6 +121,12 @@ class SystemLogService:
 
         errors = self.client.extract_batch_rci_errors(payload)
         if errors:
+            if self._errors_mean_unsupported(errors):
+                self._update_runtime_support(False)
+                return self._fallback_to_application_entries(
+                    self.UNSUPPORTED_MESSAGE,
+                    application_entries,
+                )
             return self._fallback_to_application_entries(
                 "Не удалось получить системный журнал: "
                 + "; ".join(errors),
@@ -98,6 +135,9 @@ class SystemLogService:
 
         entries = self.normalize_response(payload)
         entries.extend(application_entries)
+        self._update_runtime_support(True)
+        entries = JournalEventAnalyzer.analyze(entries)
+        self._mark_router_log_support(entries)
         return (
             True,
             (
@@ -127,11 +167,13 @@ class SystemLogService:
             if isinstance(entry, dict)
         ]
 
-    @staticmethod
     def _fallback_to_application_entries(
+        self,
         router_message: str,
         application_entries: list[dict[str, Any]],
     ) -> tuple[bool, str, list[dict[str, Any]]]:
+        analyzed_entries = JournalEventAnalyzer.analyze(application_entries)
+        self._mark_router_log_support(analyzed_entries)
         if not application_entries:
             return False, router_message, []
         return (
@@ -140,8 +182,46 @@ class SystemLogService:
                 f"{router_message} Показаны события Keenetic Manager: "
                 f"{len(application_entries)}."
             ),
-            application_entries,
+            analyzed_entries,
         )
+
+    @staticmethod
+    def _errors_mean_unsupported(errors: list[str]) -> bool:
+        text = " ".join(str(error or "") for error in errors).casefold()
+        return any(
+            marker in text
+            for marker in (
+                "not found",
+                "unknown command",
+                "unsupported",
+                "not supported",
+            )
+        )
+
+    def _mark_router_log_support(
+        self,
+        entries: list[dict[str, Any]],
+    ) -> None:
+        for entry in entries:
+            entry["router_log_supported"] = self._router_log_supported
+
+    def _update_runtime_support(self, supported: bool) -> None:
+        self._router_log_supported = bool(supported)
+        service = getattr(self.client, "compatibility_service", None)
+        update = getattr(service, "update_runtime_feature", None)
+        if not callable(update):
+            return
+        profile = update(
+            "system_log",
+            bool(supported),
+            detail=(
+                "Команда чтения журнала подтверждена роутером."
+                if supported
+                else "Команда чтения журнала отсутствует в этой версии KeeneticOS."
+            ),
+        )
+        if profile is not None:
+            self.client.compatibility_profile = profile
 
     @classmethod
     def normalize_limit(cls, value: Any) -> int:

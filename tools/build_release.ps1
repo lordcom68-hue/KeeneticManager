@@ -2,7 +2,8 @@
 param(
     [string]$Python = "python",
     [switch]$SkipInstaller,
-    [switch]$SkipQualityChecks
+    [switch]$SkipQualityChecks,
+    [switch]$SkipReleaseVerification
 )
 
 $ErrorActionPreference = "Stop"
@@ -152,6 +153,27 @@ try {
     Compress-Archive -LiteralPath $portableDirectory `
         -DestinationPath $portableZip -CompressionLevel Optimal
     Write-Host "Portable-сборка создана: $portableZip" -ForegroundColor Green
+
+    if (-not $SkipReleaseVerification) {
+        $verificationScript = Join-Path (
+            $projectRoot
+        ) "tools\verify_release.ps1"
+        if (-not (Test-Path -LiteralPath $verificationScript -PathType Leaf)) {
+            throw "Не найден скрипт проверки релиза: $verificationScript"
+        }
+        $verificationArguments = @{
+            ProjectRoot = $projectRoot
+            Version = $version
+            Python = $Python
+        }
+        if ($SkipInstaller) {
+            $verificationArguments["SkipInstallerSmoke"] = $true
+        }
+        & $verificationScript @verificationArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "Проверка релизной сборки завершилась с ошибкой."
+        }
+    }
 }
 finally {
     Pop-Location
