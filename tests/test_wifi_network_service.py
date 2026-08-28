@@ -4186,11 +4186,11 @@ class SourceBoundaryTests(unittest.TestCase):
             client_source,
         )
 
-    def test_worker_routes_writes_directly_to_service(self) -> None:
+    def test_action_dispatcher_routes_writes_directly_to_service(self) -> None:
         source = (
             Path(__file__).resolve().parents[1]
             / "core"
-            / "connection_worker.py"
+            / "router_action_dispatcher.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
             "client.wifi_network_service.create_network(",

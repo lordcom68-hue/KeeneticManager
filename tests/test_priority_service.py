@@ -301,7 +301,9 @@ class SourceBoundaryTests(unittest.TestCase):
             )
         )
         wireless = (self.root / "core/services/wireless_isp_service.py").read_text(encoding="utf-8")
-        worker = (self.root / "core/connection_worker.py").read_text(encoding="utf-8")
+        action_dispatcher = (
+            self.root / "core/router_action_dispatcher.py"
+        ).read_text(encoding="utf-8")
         self.assertIn(
             "self.client.priority_service.merge_configured_global_connections",
             result_builder,
@@ -312,7 +314,10 @@ class SourceBoundaryTests(unittest.TestCase):
         )
         self.assertIn("self.client.priority_service.set_internet_priorities", wired)
         self.assertIn("self.client.priority_service.set_internet_priorities", wireless)
-        self.assertIn("client.priority_service.set_internet_priorities", worker)
+        self.assertIn(
+            "client.priority_service.set_internet_priorities",
+            action_dispatcher,
+        )
 
     def test_large_set_operation_is_physically_in_service(self) -> None:
         service = (self.root / "core/services/priority_service.py").read_text(encoding="utf-8")

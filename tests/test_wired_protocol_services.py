@@ -245,6 +245,30 @@ class SourceBoundaryTests(unittest.TestCase):
                         15,
                     )
 
+    def test_protocol_sources_have_equivalent_public_contracts(self) -> None:
+        expected = {
+            "pppoe": {"create_wired_pppoe", "delete_wired_pppoe"},
+            "pptp": {"create_wired_pptp", "delete_wired_pptp"},
+            "l2tp": {"create_wired_l2tp", "delete_wired_l2tp"},
+        }
+        root = Path(__file__).resolve().parents[1] / "core" / "services"
+
+        for protocol, methods in expected.items():
+            path = root / f"wired_{protocol}_service.py"
+            module = ast.parse(path.read_text(encoding="utf-8"))
+            service = next(
+                node
+                for node in module.body
+                if isinstance(node, ast.ClassDef)
+            )
+            public_methods = {
+                node.name
+                for node in service.body
+                if isinstance(node, ast.FunctionDef)
+                and not node.name.startswith("_")
+            }
+            self.assertEqual(public_methods, methods)
+
 
 if __name__ == "__main__":
     unittest.main()

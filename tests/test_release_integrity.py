@@ -686,11 +686,11 @@ class ReleaseIntegrityTests(unittest.TestCase):
             "HTTP-управление интерфейсом осталось в KeeneticClient",
         )
 
-    def test_connection_worker_keeps_compatible_client_facade(self) -> None:
+    def test_action_dispatcher_keeps_compatible_client_facade(self) -> None:
         source = (
             Path(__file__).resolve().parents[1]
             / "core"
-            / "connection_worker.py"
+            / "router_action_dispatcher.py"
         ).read_text(encoding="utf-8")
 
         self.assertIn(
@@ -900,11 +900,11 @@ class ReleaseIntegrityTests(unittest.TestCase):
             "Большая IPoE-реализация осталась в KeeneticClient",
         )
 
-    def test_connection_worker_routes_wired_actions_to_service(self) -> None:
+    def test_action_dispatcher_routes_wired_actions_to_service(self) -> None:
         source = (
             Path(__file__).resolve().parents[1]
             / "core"
-            / "connection_worker.py"
+            / "router_action_dispatcher.py"
         ).read_text(encoding="utf-8")
 
         self.assertIn(
@@ -990,10 +990,10 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self,
     ) -> None:
         root = Path(__file__).resolve().parents[1]
-        worker_source = (
+        action_dispatcher_source = (
             root
             / "core"
-            / "connection_worker.py"
+            / "router_action_dispatcher.py"
         ).read_text(encoding="utf-8")
         client_source = (
             root
@@ -1006,14 +1006,14 @@ class ReleaseIntegrityTests(unittest.TestCase):
                 "client.wireless_isp_service"
                 ".create_wireless_isp"
             ),
-            worker_source,
+            action_dispatcher_source,
         )
         self.assertIn(
             (
                 "client.wireless_isp_service"
                 ".delete_wireless_isp"
             ),
-            worker_source,
+            action_dispatcher_source,
         )
         self.assertIn(
             (

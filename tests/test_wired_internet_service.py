@@ -583,11 +583,11 @@ class SourceBoundaryTests(unittest.TestCase):
             20,
         )
 
-    def test_connection_worker_calls_service_directly(self) -> None:
+    def test_action_dispatcher_calls_service_directly(self) -> None:
         source = (
             self.project_root
             / "core"
-            / "connection_worker.py"
+            / "router_action_dispatcher.py"
         ).read_text(encoding="utf-8")
 
         required = (

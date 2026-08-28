@@ -452,7 +452,7 @@ class RouterSelfCheckServiceTests(unittest.TestCase):
 
         service.run.side_effect = run
         with patch(
-            "core.connection_worker.RouterSelfCheckService",
+            "core.router_action_dispatcher.RouterSelfCheckService",
             return_value=service,
         ) as service_type:
             refresh_required = monitor.process_action(
