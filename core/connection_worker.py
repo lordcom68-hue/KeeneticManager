@@ -13,6 +13,7 @@ from core.keenetic_client import (
 from core.services.reachability import ReachabilityTracker
 from core.services.crash_report_service import report_background_exception
 from core.router_action_dispatcher import RouterActionDispatcher
+from core.router_action_models import RouterActionRequest
 
 
 class RouterMonitor(QThread):
@@ -152,9 +153,7 @@ class RouterMonitor(QThread):
 
         self._wake_event = threading.Event()
         self._lock = threading.Lock()
-        self._actions: queue.Queue[
-            tuple[str, object]
-        ] = queue.Queue()
+        self._actions: queue.Queue[RouterActionRequest] = queue.Queue()
 
         self._reachability = ReachabilityTracker(
             failure_threshold=3
@@ -693,7 +692,10 @@ class RouterMonitor(QThread):
         payload: object,
     ) -> None:
         self._actions.put(
-            (action_type, payload)
+            RouterActionRequest(
+                action_type=str(action_type),
+                payload=payload,
+            )
         )
         self._wake_event.set()
 
@@ -713,11 +715,12 @@ class RouterMonitor(QThread):
 
         while self.is_running():
             try:
-                action_type, payload = (
-                    self._actions.get_nowait()
-                )
+                action = self._actions.get_nowait()
             except queue.Empty:
                 break
+
+            action_type = action.action_type
+            payload = action.payload
 
             action_processed = True
             try:

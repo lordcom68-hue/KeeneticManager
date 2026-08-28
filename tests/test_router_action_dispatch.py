@@ -7,11 +7,21 @@ from types import SimpleNamespace
 from typing import Any
 
 from core.connection_worker import RouterMonitor
+from core.router_action_models import RouterActionRequest
 
 
 class RouterActionDispatchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.monitor = RouterMonitor({"id": 41})
+
+    def test_public_requests_enqueue_typed_action_model(self) -> None:
+        self.monitor.request_interface_state("GigabitEthernet0/2", False)
+
+        action = self.monitor._actions.get_nowait()
+
+        self.assertIsInstance(action, RouterActionRequest)
+        self.assertEqual(action.action_type, "interface_state")
+        self.assertEqual(action.payload, ("GigabitEthernet0/2", False))
 
     def test_wired_delete_actions_preserve_service_and_signal_contract(self) -> None:
         calls: list[tuple[str, str]] = []

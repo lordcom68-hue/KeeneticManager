@@ -275,7 +275,7 @@ class RouterMonitorSchedulingTests(unittest.TestCase):
                 self.assertTrue(TrackedClient.call_event.wait(1.0))
                 self.assertTrue(instances)
                 TrackedClient.call_event.clear()
-                monitor._actions.put(("system_log", 100))
+                monitor.request_system_log(100)
                 monitor.request_refresh()
                 self.assertTrue(TrackedClient.call_event.wait(1.0))
                 self.assertTrue(instances[0].log_event.wait(1.0))
