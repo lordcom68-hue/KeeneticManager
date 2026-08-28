@@ -39,6 +39,67 @@ class FakeDatabase:
 
 
 class DiagnosticsServiceTests(unittest.TestCase):
+    def test_archive_redacts_iapp_roaming_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            collector = DiagnosticCollector()
+            collector.record_snapshot(
+                "show/sc/mws/wlan",
+                {
+                    "DEFAULT__": {
+                        "ft": {
+                            "iapp": {
+                                "key": "mws-roaming-secret",
+                            }
+                        }
+                    },
+                    "ordinary": {"key": "public-identifier"},
+                },
+            )
+            collector.record_snapshot(
+                "show/sc/interface",
+                {
+                    "Bridge0": {
+                        "iapp": {
+                            "key": "bridge-roaming-secret",
+                        }
+                    }
+                },
+            )
+
+            archive_path = collector.create_archive(directory)
+
+            with zipfile.ZipFile(archive_path) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+                mws = json.loads(
+                    archive.read("snapshots/show_sc_mws_wlan.json")
+                )
+                interface = json.loads(
+                    archive.read("snapshots/show_sc_interface.json")
+                )
+                archive_text = "\n".join(
+                    archive.read(name).decode("utf-8", errors="replace")
+                    for name in archive.namelist()
+                )
+
+            self.assertEqual(
+                mws["DEFAULT__"]["ft"]["iapp"]["key"],
+                "[REDACTED]",
+            )
+            self.assertEqual(
+                interface["Bridge0"]["iapp"]["key"],
+                "[REDACTED]",
+            )
+            self.assertEqual(
+                mws["ordinary"]["key"],
+                "public-identifier",
+            )
+            self.assertNotIn("mws-roaming-secret", archive_text)
+            self.assertNotIn("bridge-roaming-secret", archive_text)
+            self.assertEqual(manifest["security"]["redaction_version"], 3)
+            self.assertTrue(
+                manifest["security"]["wifi_roaming_secrets_removed"]
+            )
+
     def test_archive_member_names_are_unique(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

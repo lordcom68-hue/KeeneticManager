@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import Any
 
 from PySide6.QtCore import QThread, Signal
@@ -128,6 +129,11 @@ class RouterMonitor(QThread):
         20_000,
         30_000,
     )
+    HANDOFF_TIMEOUT_SECONDS = 90.0
+    HANDOFF_RETRY_DELAY_MS = 5_000
+    OFFLINE_ACTIONS = frozenset(
+        {"diagnostic_archive", "clear_diagnostics"}
+    )
 
     def __init__(
         self,
@@ -150,10 +156,14 @@ class RouterMonitor(QThread):
         self._refresh_requested = False
         self._offline_retry_level = 0
         self._authentication_blocked = False
+        self._handoff_connection_mode = ""
+        self._handoff_deadline = 0.0
+        self._active_client: KeeneticClient | None = None
 
         self._wake_event = threading.Event()
         self._lock = threading.Lock()
         self._actions: queue.Queue[RouterActionRequest] = queue.Queue()
+        self._offline_actions: queue.Queue[RouterActionRequest] = queue.Queue()
 
         self._reachability = ReachabilityTracker(
             failure_threshold=3
@@ -212,6 +222,21 @@ class RouterMonitor(QThread):
             client.transport.record_monitor_state(
                 "connected",
                 result.last_result_message or "Связь подтверждена.",
+            )
+            return result
+
+        handoff_mode = self.expected_handoff_mode()
+        if handoff_mode:
+            target_title = "KeenDNS" if handoff_mode == "keendns" else "локальный адрес"
+            result.connection_state = "handoff"
+            result.confirmed_offline = False
+            result.transient_failure_suppressed = True
+            result.last_result_message = (
+                f"Переключение режима выполнено. Ожидается подключение через {target_title}."
+            )
+            client.transport.record_monitor_state(
+                "handoff",
+                result.last_result_message,
             )
             return result
 
@@ -281,6 +306,9 @@ class RouterMonitor(QThread):
             self.monitor_stopped.emit(self.router_id)
             return
 
+        with self._lock:
+            self._active_client = client
+
         first_cycle = True
 
         try:
@@ -340,9 +368,9 @@ class RouterMonitor(QThread):
                             keendns=router.get(
                                 "keendns"
                             ),
-                            connection_mode=router.get(
-                                "connection_mode",
-                                "auto",
+                            connection_mode=(
+                                self.expected_handoff_mode()
+                                or router.get("connection_mode", "auto")
                             ),
                         )
                         first_cycle = False
@@ -370,6 +398,9 @@ class RouterMonitor(QThread):
 
                 if not self.is_running():
                     break
+
+                if result.success:
+                    self.complete_expected_handoff()
 
                 result = self.apply_reachability_state(
                     result,
@@ -425,6 +456,8 @@ class RouterMonitor(QThread):
                     ),
                 )
         finally:
+            with self._lock:
+                self._active_client = None
             client.close()
             self.monitor_stopped.emit(
                 self.router_id
@@ -691,12 +724,17 @@ class RouterMonitor(QThread):
         action_type: str,
         payload: object,
     ) -> None:
-        self._actions.put(
-            RouterActionRequest(
-                action_type=str(action_type),
-                payload=payload,
-            )
+        normalized_type = str(action_type)
+        request = RouterActionRequest(
+            action_type=normalized_type,
+            payload=payload,
         )
+        target_queue = (
+            self._offline_actions
+            if normalized_type in self.OFFLINE_ACTIONS
+            else self._actions
+        )
+        target_queue.put(request)
         self._wake_event.set()
 
     def process_actions(
@@ -713,40 +751,47 @@ class RouterMonitor(QThread):
         refresh_required = False
         action_processed = False
 
-        while self.is_running():
-            try:
-                action = self._actions.get_nowait()
-            except queue.Empty:
-                break
+        action_queues = [self._offline_actions]
+        if client.connected:
+            action_queues.append(self._actions)
 
-            action_type = action.action_type
-            payload = action.payload
+        for action_queue in action_queues:
+            while self.is_running():
+                if action_queue is self._actions and not client.connected:
+                    break
+                try:
+                    action = action_queue.get_nowait()
+                except queue.Empty:
+                    break
 
-            action_processed = True
-            try:
-                refresh_required = (
-                    self.process_action(
+                action_type = action.action_type
+                payload = action.payload
+
+                action_processed = True
+                try:
+                    refresh_required = (
+                        self.process_action(
+                            client=client,
+                            action_type=action_type,
+                            payload=payload,
+                        )
+                        or refresh_required
+                    )
+                except Exception as error:
+                    report_background_exception(
+                        "router_monitor.action",
+                        error,
+                        details={
+                            "router_id": self.router_id,
+                            "action_type": action_type,
+                        },
+                    )
+                    self.emit_action_failure(
                         client=client,
                         action_type=action_type,
                         payload=payload,
+                        error=error,
                     )
-                    or refresh_required
-                )
-            except Exception as error:
-                report_background_exception(
-                    "router_monitor.action",
-                    error,
-                    details={
-                        "router_id": self.router_id,
-                        "action_type": action_type,
-                    },
-                )
-                self.emit_action_failure(
-                    client=client,
-                    action_type=action_type,
-                    payload=payload,
-                    error=error,
-                )
 
         if refresh_required and self.is_running():
             self.emit_immediate_refresh(client)
@@ -1171,6 +1216,7 @@ class RouterMonitor(QThread):
                 details["display_name"] = {
                     "rescuer": "Спасатель",
                     "rescued": "Спасаемый",
+                    "mixed": "Смешанный",
                 }.get(mode, mode)
         elif action_type == "create_cable_internet" and isinstance(payload, dict):
             mode = str(payload.get("mode") or "")
@@ -1317,8 +1363,19 @@ class RouterMonitor(QThread):
             client.close()
 
     def stop(self) -> None:
+        active_client: KeeneticClient | None
         with self._lock:
             self._running = False
+            active_client = self._active_client
+        if active_client is not None:
+            try:
+                active_client.abort_pending_io()
+            except Exception as error:
+                report_background_exception(
+                    "router_monitor.abort",
+                    error,
+                    details={"router_id": self.router_id},
+                )
         self._wake_event.set()
 
     def request_refresh(self) -> None:
@@ -1333,6 +1390,8 @@ class RouterMonitor(QThread):
     ) -> int:
         """Возвращает паузу с backoff для подтверждённого offline."""
         base_interval = self.interval_ms()
+        if self.expected_handoff_mode():
+            return max(base_interval, self.HANDOFF_RETRY_DELAY_MS)
         if (
             bool(result.success)
             or not bool(result.confirmed_offline)
@@ -1349,6 +1408,35 @@ class RouterMonitor(QThread):
             base_interval,
             self.OFFLINE_RETRY_DELAYS_MS[delay_index],
         )
+
+    def begin_expected_handoff(
+        self,
+        client: KeeneticClient,
+        connection_mode: str,
+    ) -> None:
+        mode = str(connection_mode or "").strip().lower()
+        if mode not in {"local", "keendns"}:
+            return
+        with self._lock:
+            self._handoff_connection_mode = mode
+            self._handoff_deadline = time.monotonic() + self.HANDOFF_TIMEOUT_SECONDS
+            self._authentication_blocked = False
+        client.close()
+        self._wake_event.set()
+
+    def expected_handoff_mode(self) -> str:
+        with self._lock:
+            mode = self._handoff_connection_mode
+            if mode and time.monotonic() >= self._handoff_deadline:
+                self._handoff_connection_mode = ""
+                self._handoff_deadline = 0.0
+                mode = ""
+            return mode
+
+    def complete_expected_handoff(self) -> None:
+        with self._lock:
+            self._handoff_connection_mode = ""
+            self._handoff_deadline = 0.0
 
     def consume_refresh_request(self) -> bool:
         with self._lock:

@@ -364,7 +364,7 @@ class RouterCompatibilityService:
             ),
             cls._feature(
                 "rescue_mode",
-                "Режим Спасатель/Спасаемый",
+                "Режим Спасатель/Спасаемый/Смешанный",
                 rescue_state,
                 "Требует Wireless ISP и управляемую Wi-Fi сеть.",
             ),

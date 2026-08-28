@@ -74,6 +74,9 @@ class FakeKeeneticClient:
     def close(self) -> None:
         self.connected = False
 
+    def abort_pending_io(self) -> None:
+        self.close()
+
 
 class AuthenticationFailureClient(FakeKeeneticClient):
     def _result(self) -> FakeResult:
@@ -119,6 +122,36 @@ class ExplodingStatusWorker(RouterStatusWorker):
 class RouterMonitorSchedulingTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeKeeneticClient.reset()
+
+    def test_expected_handoff_closes_old_session_and_uses_backoff(self) -> None:
+        monitor = RouterMonitor(
+            {"id": 120, "status": True},
+            interval_ms=1_000,
+        )
+        client = FakeKeeneticClient()
+        client.connected = True
+
+        monitor.begin_expected_handoff(client, "keendns")
+
+        self.assertFalse(client.connected)
+        self.assertEqual(monitor.expected_handoff_mode(), "keendns")
+        self.assertEqual(
+            monitor.next_cycle_delay_ms(FakeResult()),
+            monitor.HANDOFF_RETRY_DELAY_MS,
+        )
+        monitor.complete_expected_handoff()
+        self.assertEqual(monitor.expected_handoff_mode(), "")
+
+    def test_stop_aborts_active_http_session(self) -> None:
+        monitor = RouterMonitor({"id": 121, "status": True})
+        client = FakeKeeneticClient()
+        client.connected = True
+        monitor._active_client = client
+
+        monitor.stop()
+
+        self.assertFalse(client.connected)
+        self.assertFalse(monitor.is_running())
 
     def stop_monitor(self, monitor: RouterMonitor) -> None:
         monitor.stop()

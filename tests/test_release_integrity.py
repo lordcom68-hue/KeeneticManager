@@ -12,8 +12,8 @@ class ReleaseIntegrityTests(unittest.TestCase):
             APP_VERSION,
         )
 
-        self.assertEqual(APP_VERSION, "1.0.13-beta")
-        self.assertEqual(APP_RELEASE_STATUS, "beta")
+        self.assertEqual(APP_VERSION, "1.0.14-rc1")
+        self.assertEqual(APP_RELEASE_STATUS, "rc")
         self.assertEqual(APP_RELEASE_TRACK, "beta")
         root = Path(__file__).resolve().parents[1]
         version_info = (
@@ -22,7 +22,7 @@ class ReleaseIntegrityTests(unittest.TestCase):
         installer = (
             root / "packaging" / "KeeneticManager.iss"
         ).read_text(encoding="utf-8")
-        self.assertIn("filevers=(1, 0, 13, 0)", version_info)
+        self.assertIn("filevers=(1, 0, 14, 0)", version_info)
         self.assertIn(f"FileVersion', '{APP_VERSION}'", version_info)
         self.assertIn(f"ProductVersion', '{APP_VERSION}'", version_info)
         self.assertIn(f'#define MyAppVersion "{APP_VERSION}"', installer)

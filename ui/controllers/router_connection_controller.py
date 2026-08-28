@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Callable
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
 
 from core.connection_worker import RouterMonitor
@@ -26,6 +27,7 @@ class RouterConnectionController:
         self.monitor_factory = monitor_factory
         self.monitors: dict[int, RouterMonitor] = {}
         self.stopping_monitors: dict[int, RouterMonitor] = {}
+        self.pending_reconnects: set[int] = set()
         self.status_worker = status_worker_factory(
             interval_seconds=3.0,
             timeout_seconds=1.2,
@@ -240,13 +242,11 @@ class RouterConnectionController:
             )
             return
         if router_id in self.stopping_monitors:
-            QMessageBox.information(
-                window,
-                "Отключение завершается",
-                (
-                    "Дождитесь полной остановки мониторинга, "
-                    "затем подключите роутер снова."
-                ),
+            self.pending_reconnects.add(router_id)
+            window.set_router_monitor_ui_state("connecting")
+            window.statusBar().showMessage(
+                "Завершается предыдущий сетевой запрос. "
+                "Подключение продолжится автоматически.",
             )
             return
 
@@ -272,6 +272,7 @@ class RouterConnectionController:
             return
 
         window.pending_rescue_modes.pop(router_id, None)
+        window.pending_rescue_handoffs.discard(router_id)
         window.clear_router_state()
         window.status_label.setText("● Подключение...")
         window.connected_address_label.setText(
@@ -335,6 +336,13 @@ class RouterConnectionController:
         if result.success:
             window.update_router_item_status(router_id, True)
             window.connection_results[router_id] = result
+            resolve_pending = getattr(
+                window,
+                "resolve_pending_rescue_mode",
+                None,
+            )
+            if callable(resolve_pending):
+                resolve_pending(router_id, result)
             window.update_active_cable_dialog(router_id, result)
             window.update_active_wireless_isp_dialog(router_id, result)
         elif confirmed_offline:
@@ -349,12 +357,15 @@ class RouterConnectionController:
             return
 
         if transient_failure:
+            handoff = connection_state == "handoff"
             retrying = connection_state == "retrying"
             window.set_router_monitor_ui_state(
-                "retrying" if retrying else "unstable"
+                "handoff" if handoff else ("retrying" if retrying else "unstable")
             )
             window.status_label.setText(
-                "● Повторная попытка" if retrying else "● Связь нестабильна"
+                "● Переподключение"
+                if handoff
+                else ("● Повторная попытка" if retrying else "● Связь нестабильна")
             )
             window.statusBar().showMessage(result.message, 5000)
             window.sync_developer_mode_for_selected_router()
@@ -376,6 +387,13 @@ class RouterConnectionController:
             return
 
         if not result.success:
+            cancel_pending = getattr(
+                window,
+                "cancel_pending_rescue_mode",
+                None,
+            )
+            if callable(cancel_pending):
+                cancel_pending(router_id)
             window.set_router_monitor_ui_state("reconnecting")
             window.status_label.setText("● Offline")
             window.connected_address_label.setText(
@@ -420,8 +438,10 @@ class RouterConnectionController:
             return
 
         monitor = self.monitors.pop(router_id, None)
+        self.pending_reconnects.discard(router_id)
         window.connection_results.pop(router_id, None)
         window.pending_rescue_modes.pop(router_id, None)
+        window.pending_rescue_handoffs.discard(router_id)
         window.router_self_check_controller.forget_router(router_id)
         window.clear_router_traffic_history(router_id)
         window.last_monitor_results.pop(router_id, None)
@@ -449,7 +469,7 @@ class RouterConnectionController:
         )
         window.clear_router_state()
         window.set_router_monitor_ui_state(
-            "stopping" if monitor is not None else "disconnected"
+            "disconnected"
         )
         window.sync_developer_mode_for_selected_router()
         window.statusBar().showMessage(
@@ -505,6 +525,7 @@ class RouterConnectionController:
         window = self.window
         window.disable_developer_mode_for_router(router_id)
         window.pending_rescue_modes.pop(router_id, None)
+        window.pending_rescue_handoffs.discard(router_id)
         window.router_self_check_controller.monitor_stopped(router_id)
         monitor = self.monitors.pop(router_id, None)
         if monitor is not None:
@@ -517,7 +538,11 @@ class RouterConnectionController:
             window.connected_address_label.setText(
                 "Фактический адрес: —\nПодключение: —"
             )
-            window.set_router_monitor_ui_state("stopping")
+            window.set_router_monitor_ui_state(
+                "connecting"
+                if router_id in self.pending_reconnects
+                else "disconnected"
+            )
 
     def monitor_finished(
         self,
@@ -531,11 +556,21 @@ class RouterConnectionController:
             self.stopping_monitors.pop(router_id, None)
         monitor.deleteLater()
 
+        reconnect_requested = router_id in self.pending_reconnects
+        self.pending_reconnects.discard(router_id)
+
         if window.get_selected_router_id() == router_id:
             window.set_router_monitor_ui_state(
-                "connecting" if router_id in self.monitors else "disconnected"
+                "connecting"
+                if reconnect_requested or router_id in self.monitors
+                else "disconnected"
             )
         else:
             window._update_router_management_actions()
             window._update_global_router_actions()
 
+        if (
+            reconnect_requested
+            and window.get_selected_router_id() == router_id
+        ):
+            QTimer.singleShot(0, self.connect_selected)

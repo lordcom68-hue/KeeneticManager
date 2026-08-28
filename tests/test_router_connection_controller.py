@@ -3,11 +3,8 @@ from __future__ import annotations
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PySide6.QtWidgets import QMessageBox  # noqa: E402
 
 from ui.controllers.router_connection_controller import (  # noqa: E402
     RouterConnectionController,
@@ -161,6 +158,7 @@ class RouterConnectionControllerTests(unittest.TestCase):
             last_monitor_results={},
             persisted_router_status={},
             pending_rescue_modes={},
+            pending_rescue_handoffs=set(),
             developer_mode_by_router={},
             auto_refresh_checkbox=SimpleNamespace(isChecked=lambda: True),
             reachability_checkbox=SimpleNamespace(isChecked=lambda: True),
@@ -242,23 +240,51 @@ class RouterConnectionControllerTests(unittest.TestCase):
         self.assertEqual(calls["ui_state"], ["connecting"])
         self.assertTrue(monitor.kwargs["paused"] is False)
 
-    def test_reconnect_is_blocked_until_old_thread_finishes(self) -> None:
-        controller, _window, _calls = self.make_controller()
+    def test_reconnect_is_queued_until_old_thread_finishes(self) -> None:
+        controller, _window, calls = self.make_controller()
         controller.connect_selected()
         old_monitor = controller.monitors[1]
         controller.disconnect_selected()
 
-        with patch.object(QMessageBox, "information") as information:
-            controller.connect_selected()
+        controller.connect_selected()
 
         self.assertEqual(old_monitor.stop_calls, 1)
         self.assertIs(controller.stopping_monitors[1], old_monitor)
         self.assertNotIn(1, controller.monitors)
-        information.assert_called_once()
+        self.assertIn(1, controller.pending_reconnects)
+        self.assertEqual(calls["ui_state"][-1], "connecting")
 
         controller.monitor_finished(1, old_monitor)
         self.assertNotIn(1, controller.stopping_monitors)
+        self.assertNotIn(1, controller.pending_reconnects)
         self.assertEqual(old_monitor.delete_calls, 1)
+
+    def test_late_stopped_signal_cannot_restore_stopping_state(self) -> None:
+        controller, _window, calls = self.make_controller()
+        controller.connect_selected()
+        monitor = controller.monitors[1]
+        controller.disconnect_selected()
+        controller.monitor_finished(1, monitor)
+
+        controller.monitor_stopped(1)
+
+        self.assertEqual(calls["ui_state"][-1], "disconnected")
+        self.assertNotIn(1, controller.stopping_monitors)
+
+    def test_handoff_state_is_shown_as_reconnection(self) -> None:
+        controller, _window, calls = self.make_controller()
+        controller.monitors[1] = FakeMonitor()
+        result = SimpleNamespace(
+            success=False,
+            message="waiting",
+            connection_state="handoff",
+            confirmed_offline=False,
+            transient_failure_suppressed=True,
+        )
+
+        controller.connection_completed(1, result)
+
+        self.assertEqual(calls["ui_state"][-1], "handoff")
 
     def test_late_result_from_disconnected_monitor_is_ignored(self) -> None:
         controller, window, calls = self.make_controller()

@@ -155,6 +155,9 @@ class WiFiSettingsNetworkCard(QFrame):
         )
         security_text = {
             "wpa2": "WPA2-PSK",
+            "wpa2_wpa3": "WPA2/WPA3-PSK",
+            "wpa3": "WPA3-SAE",
+            "owe": "OWE",
             "open": "Открытая сеть",
             "mixed": "Различается по диапазонам",
             "unknown": "Не определена",

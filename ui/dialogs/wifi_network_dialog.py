@@ -82,15 +82,37 @@ class WiFiNetworkDialog(QDialog):
         form.addRow("SSID:", self.ssid_edit)
 
         self.security_combo = QComboBox()
-        self.security_combo.addItem("WPA2-PSK", "wpa2")
-        self.security_combo.addItem("Открытая сеть", "open")
-
         current_security = str(
             self.network.get("security_mode") or "wpa2"
-        ).lower()
-        self.initial_security = (
-            "open" if current_security == "open" else "wpa2"
         )
+        self.initial_security = WiFiNetworkService.normalize_security_mode(
+            current_security
+        )
+        mws_supported = bool(
+            self.capabilities.get("mws_supported", True)
+        )
+        security_options = list(
+            WiFiNetworkService.MWS_SECURITY_OPTIONS
+            if mws_supported
+            else WiFiNetworkService.LEGACY_SECURITY_OPTIONS
+        )
+        option_modes = {mode for _label, mode in security_options}
+        if self.initial_security not in option_modes:
+            current_label = next(
+                (
+                    label
+                    for label, mode
+                    in WiFiNetworkService.MWS_SECURITY_OPTIONS
+                    if mode == self.initial_security
+                ),
+                f"Текущий режим ({current_security})",
+            )
+            security_options.insert(
+                0,
+                (current_label, self.initial_security),
+            )
+        for label, mode in security_options:
+            self.security_combo.addItem(label, mode)
         index = self.security_combo.findData(
             self.initial_security
         )
@@ -256,6 +278,9 @@ class WiFiNetworkDialog(QDialog):
 
     def settings(self) -> dict[str, Any]:
         password = self.password_edit.text()
+        security = str(
+            self.security_combo.currentData() or "wpa2"
+        )
         bands = [
             band
             for band, checkbox in self.band_checks.items()
@@ -263,15 +288,15 @@ class WiFiNetworkDialog(QDialog):
         ]
         return {
             "ssid": self.ssid_edit.text().strip(),
-            "security": str(
-                self.security_combo.currentData() or "wpa2"
-            ),
+            "security": security,
             "password": password,
-            "change_password": bool(password) or not self.edit_mode,
+            "change_password": (
+                WiFiNetworkService.security_uses_password(security)
+                and (bool(password) or not self.edit_mode)
+            ),
             "change_security": (
                 not self.edit_mode
-                or str(self.security_combo.currentData() or "wpa2")
-                != self.initial_security
+                or security != self.initial_security
             ),
             "hidden": self.hidden_check.isChecked(),
             "enabled": self.enabled_check.isChecked() and bool(bands),
@@ -305,7 +330,7 @@ class WiFiNetworkDialog(QDialog):
             return
 
         password_required = (
-            security != "open"
+            WiFiNetworkService.security_uses_password(security)
             and (
                 not self.edit_mode
                 or bool(settings["change_password"])
@@ -318,7 +343,7 @@ class WiFiNetworkDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Некорректный пароль",
-                "Пароль WPA2 должен содержать от 8 до 63 символов.",
+                "Пароль Wi-Fi должен содержать от 8 до 63 символов.",
             )
             self.password_edit.setFocus()
             return
@@ -326,10 +351,12 @@ class WiFiNetworkDialog(QDialog):
         self.accept()
 
     def _sync_security_controls(self) -> None:
-        open_network = self.security_combo.currentData() == "open"
-        self.password_edit.setEnabled(not open_network)
-        self.show_password_check.setEnabled(not open_network)
-        if open_network:
+        password_used = WiFiNetworkService.security_uses_password(
+            self.security_combo.currentData()
+        )
+        self.password_edit.setEnabled(password_used)
+        self.show_password_check.setEnabled(password_used)
+        if not password_used:
             self.password_edit.clear()
             self.show_password_check.setChecked(False)
 

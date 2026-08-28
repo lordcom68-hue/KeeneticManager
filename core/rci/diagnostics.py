@@ -13,6 +13,7 @@ from typing import Any
 
 
 REDACTED = "[REDACTED]"
+REDACTION_VERSION = 3
 
 _SECRET_KEY_PARTS = {
     "password",
@@ -31,6 +32,10 @@ _SECRET_KEY_PARTS = {
     "session",
     "challenge",
     "credential",
+}
+
+_SECRET_CHILD_KEYS = {
+    ("iapp", "key"),
 }
 
 _PEM_BLOCK_RE = re.compile(
@@ -180,6 +185,29 @@ def _key_is_sensitive(key: Any) -> bool:
     )
 
 
+def _child_key_is_sensitive(
+    parent_key: Any,
+    key: Any,
+) -> bool:
+    """Return whether a normally generic child key is secret in context."""
+    normalized_parent = (
+        str(parent_key or "")
+        .strip()
+        .lower()
+        .replace("_", "-")
+    )
+    normalized_key = (
+        str(key or "")
+        .strip()
+        .lower()
+        .replace("_", "-")
+    )
+    return (
+        normalized_parent,
+        normalized_key,
+    ) in _SECRET_CHILD_KEYS
+
+
 def sanitize_value(
     value: Any,
     *,
@@ -189,13 +217,17 @@ def sanitize_value(
         return REDACTED
 
     if isinstance(value, dict):
-        return {
-            str(key): sanitize_value(
+        result: dict[str, Any] = {}
+        for key, nested in value.items():
+            key_text = str(key)
+            if _child_key_is_sensitive(parent_key, key_text):
+                result[key_text] = REDACTED
+                continue
+            result[key_text] = sanitize_value(
                 nested,
-                parent_key=str(key),
+                parent_key=key_text,
             )
-            for key, nested in value.items()
-        }
+        return result
 
     if isinstance(value, list):
         return [
@@ -539,8 +571,9 @@ class DiagnosticCollector:
             ),
             "statistics": statistics,
             "security": {
-                "redaction_version": 2,
+                "redaction_version": REDACTION_VERSION,
                 "vpn_embedded_secrets_removed": True,
+                "wifi_roaming_secrets_removed": True,
             },
         }
 

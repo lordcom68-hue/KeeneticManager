@@ -123,7 +123,14 @@ class OperationHistoryServiceTests(unittest.TestCase):
                 create_network=lambda settings: (
                     True,
                     "Сеть создана.",
-                    {"ssid": settings["ssid"]},
+                    {
+                        "ssid": settings["ssid"],
+                        "mws_command_fields": [
+                            "band",
+                            "encryption",
+                            "ssid",
+                        ],
+                    },
                 )
             ),
             operation_history_service=SimpleNamespace(
@@ -143,6 +150,10 @@ class OperationHistoryServiceTests(unittest.TestCase):
         self.assertTrue(refresh)
         self.assertEqual(recorded[0][0], "wifi_network")
         self.assertEqual(recorded[0][2]["display_name"], "Home")
+        self.assertEqual(
+            recorded[0][2]["mws_command_fields"],
+            ["band", "encryption", "ssid"],
+        )
         self.assertNotIn("password", recorded[0][2])
         self.assertNotIn("top-secret", str(recorded[0]))
 

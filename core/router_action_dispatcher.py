@@ -263,18 +263,30 @@ class RouterActionDispatcher:
                 dict(payload)
             )
         )
+        history_details = {
+            "operation": "create",
+            "display_name": self._safe_display_name(
+                details,
+                payload,
+            ),
+        }
+        command_fields = (
+            details.get("mws_command_fields")
+            if isinstance(details, dict)
+            else None
+        )
+        if isinstance(command_fields, list):
+            history_details["mws_command_fields"] = [
+                str(value)
+                for value in command_fields
+                if str(value).strip()
+            ]
         self._record_operation(
             client,
             "wifi_network",
             message,
             success=success,
-            details={
-                "operation": "create",
-                "display_name": self._safe_display_name(
-                    details,
-                    payload,
-                ),
-            },
+            details=history_details,
             result_details=details,
         )
         self.wifi_network_action_completed.emit(
@@ -308,6 +320,11 @@ class RouterActionDispatcher:
                 "display_name": self._safe_display_name(
                     details,
                     settings,
+                ),
+                "requested_security": (
+                    str(settings.get("security") or "")
+                    if settings.get("change_security")
+                    else None
                 ),
             },
             result_details=details,
@@ -379,6 +396,7 @@ class RouterActionDispatcher:
                 "display_name": {
                     "rescuer": "Спасатель",
                     "rescued": "Спасаемый",
+                    "mixed": "Смешанный",
                 }.get(str(mode), str(mode)),
             },
             result_details=details,
@@ -390,7 +408,17 @@ class RouterActionDispatcher:
             message,
             details,
         )
-        return True
+        handoff_pending = bool(
+            success
+            and isinstance(details, dict)
+            and details.get("handoff_pending")
+        )
+        if handoff_pending:
+            self.begin_expected_handoff(
+                client,
+                str(details.get("handoff_connection_mode") or ""),
+            )
+        return not handoff_pending
 
     def _handle_delete_wifi_network(
         self,

@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from core.services.rescue_mode_service import (
+    MIXED_MODE,
     RESCUED_MODE,
     RESCUER_MODE,
     RescueModeService,
@@ -88,6 +89,10 @@ class RescueModeSwitchTests(unittest.TestCase):
 
         self.assertTrue(self.widget.rescuer_button.isEnabled())
         self.assertTrue(self.widget.rescued_button.isEnabled())
+        self.assertTrue(self.widget.mixed_button.isEnabled())
+        self.assertTrue(
+            self.widget.mixed_button.property("modeActive")
+        )
         self.assertIn("Смешанный", self.widget.status_label.text())
 
     def test_buttons_emit_expected_mode(self) -> None:
@@ -102,8 +107,12 @@ class RescueModeSwitchTests(unittest.TestCase):
 
         self.widget.rescuer_button.click()
         self.widget.rescued_button.click()
+        self.widget.mixed_button.click()
 
-        self.assertEqual(modes, [RESCUER_MODE, RESCUED_MODE])
+        self.assertEqual(
+            modes,
+            [RESCUER_MODE, RESCUED_MODE, MIXED_MODE],
+        )
 
     def test_busy_state_disables_both_buttons(self) -> None:
         self.widget.set_context(
@@ -116,6 +125,7 @@ class RescueModeSwitchTests(unittest.TestCase):
 
         self.assertFalse(self.widget.rescuer_button.isEnabled())
         self.assertFalse(self.widget.rescued_button.isEnabled())
+        self.assertFalse(self.widget.mixed_button.isEnabled())
         self.assertIn("Включение", self.widget.status_label.text())
 
     def test_success_result_reenables_buttons_in_confirmed_mode(self) -> None:
@@ -130,6 +140,7 @@ class RescueModeSwitchTests(unittest.TestCase):
         messages: list[str] = []
         harness = SimpleNamespace(
             pending_rescue_modes={7: RESCUER_MODE},
+            pending_rescue_handoffs=set(),
             get_selected_router_id=lambda: 7,
             connection_results={7: result},
             rescue_mode_switch=self.widget,
@@ -152,10 +163,53 @@ class RescueModeSwitchTests(unittest.TestCase):
         self.assertEqual(harness.pending_rescue_modes, {})
         self.assertTrue(self.widget.rescuer_button.isEnabled())
         self.assertTrue(self.widget.rescued_button.isEnabled())
+        self.assertTrue(self.widget.mixed_button.isEnabled())
         self.assertTrue(
             self.widget.rescuer_button.property("modeActive")
         )
         self.assertEqual(messages, ["Готово"])
+
+    def test_handoff_keeps_buttons_locked_until_fresh_snapshot(self) -> None:
+        initial_context = self.context(
+            wisp_enabled=True,
+            wifi_enabled=True,
+        )
+        messages: list[str] = []
+        monitor_states: list[str] = []
+        status_texts: list[str] = []
+        harness = SimpleNamespace(
+            pending_rescue_modes={7: RESCUED_MODE},
+            pending_rescue_handoffs=set(),
+            get_selected_router_id=lambda: 7,
+            connection_results={},
+            rescue_mode_switch=self.widget,
+            set_router_monitor_ui_state=monitor_states.append,
+            status_label=SimpleNamespace(setText=status_texts.append),
+            statusBar=lambda: SimpleNamespace(
+                showMessage=lambda message, *_args: messages.append(message)
+            ),
+        )
+        self.widget.set_context(initial_context)
+
+        MainWindow.rescue_mode_action_completed(
+            harness,
+            7,
+            RESCUED_MODE,
+            True,
+            "Ожидается KeenDNS",
+            {
+                "handoff_pending": True,
+                "handoff_connection_mode": "keendns",
+            },
+        )
+
+        self.assertEqual(harness.pending_rescue_modes, {7: RESCUED_MODE})
+        self.assertFalse(self.widget.rescuer_button.isEnabled())
+        self.assertFalse(self.widget.rescued_button.isEnabled())
+        self.assertFalse(self.widget.mixed_button.isEnabled())
+        self.assertEqual(monitor_states, ["handoff"])
+        self.assertEqual(status_texts, ["● Переподключение"])
+        self.assertEqual(messages, ["Ожидается KeenDNS"])
 
     def test_failure_result_restores_previous_mode_and_buttons(self) -> None:
         initial_context = self.context(
@@ -168,6 +222,7 @@ class RescueModeSwitchTests(unittest.TestCase):
         )
         harness = SimpleNamespace(
             pending_rescue_modes={7: RESCUED_MODE},
+            pending_rescue_handoffs=set(),
             get_selected_router_id=lambda: 7,
             connection_results={7: result},
             rescue_mode_switch=self.widget,
@@ -188,6 +243,7 @@ class RescueModeSwitchTests(unittest.TestCase):
         self.assertEqual(harness.pending_rescue_modes, {})
         self.assertTrue(self.widget.rescuer_button.isEnabled())
         self.assertTrue(self.widget.rescued_button.isEnabled())
+        self.assertTrue(self.widget.mixed_button.isEnabled())
         self.assertTrue(
             self.widget.rescuer_button.property("modeActive")
         )

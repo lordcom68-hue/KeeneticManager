@@ -47,6 +47,7 @@ from core.services.runtime_paths import (
     LOGS_DIR,
 )
 from core.services.rescue_mode_service import (
+    MIXED_MODE,
     RESCUED_MODE,
     RESCUER_MODE,
     RescueModeService,
@@ -266,6 +267,7 @@ class MainWindow(QMainWindow):
         # отключения, чтобы офлайн-архив содержал причину сбоя.
         self.last_monitor_results: dict[int, object] = {}
         self.pending_rescue_modes: dict[int, str] = {}
+        self.pending_rescue_handoffs: set[int] = set()
 
         # Открытый мастер кабельного Интернета получает свежий
         # список LAN-портов из каждого нового снимка роутера.
@@ -2392,7 +2394,7 @@ class MainWindow(QMainWindow):
         normalized = int(router_id)
 
         if normalized in self.stopping_router_monitors:
-            return "stopping"
+            return "disconnected"
 
         if normalized not in self.router_monitors:
             return "disconnected"
@@ -3259,6 +3261,12 @@ class MainWindow(QMainWindow):
             if interfaces
             else f"Профиль MWS: {profile_id} (диапазоны не назначены)"
         )
+        system_warning = (
+            "\n\nЭто основная системная Wi-Fi сеть роутера. "
+            "После её удаления Wi-Fi-доступ может быть потерян."
+            if profile_id == "DEFAULT__"
+            else ""
+        )
 
         answer = ask_yes_no(
             self,
@@ -3269,6 +3277,7 @@ class MainWindow(QMainWindow):
                 f"Подключённых клиентов: {clients}\n\n"
                 "Устройства потеряют соединение. "
                 "Отменить операцию после подтверждения нельзя."
+                + system_warning
             ),
             icon=QMessageBox.Icon.Warning,
         )
@@ -4904,6 +4913,7 @@ class MainWindow(QMainWindow):
         if requested_mode not in {
             RESCUER_MODE,
             RESCUED_MODE,
+            MIXED_MODE,
         }:
             return
 
@@ -4938,11 +4948,11 @@ class MainWindow(QMainWindow):
                 f"Не удалось поставить команду в очередь: {error}",
             )
             return
-        title = (
-            "Спасатель"
-            if requested_mode == RESCUER_MODE
-            else "Спасаемый"
-        )
+        title = {
+            RESCUER_MODE: "Спасатель",
+            RESCUED_MODE: "Спасаемый",
+            MIXED_MODE: "Смешанный",
+        }[requested_mode]
         self.statusBar().showMessage(
             f"Включение режима «{title}»..."
         )
@@ -4955,21 +4965,38 @@ class MainWindow(QMainWindow):
         message: str,
         details: object,
     ) -> None:
-        del details
-
         requested_mode = str(mode or "").strip().lower()
-        pending_mode = self.pending_rescue_modes.pop(
-            int(router_id),
-            None,
-        )
+        pending_mode = self.pending_rescue_modes.get(int(router_id))
         if requested_mode not in {
             RESCUER_MODE,
             RESCUED_MODE,
+            MIXED_MODE,
         }:
             requested_mode = str(pending_mode or "")
 
+        handoff_pending = bool(
+            success
+            and isinstance(details, dict)
+            and details.get("handoff_pending")
+        )
         if router_id != self.get_selected_router_id():
+            if handoff_pending:
+                self.pending_rescue_handoffs.add(int(router_id))
+            else:
+                self.pending_rescue_handoffs.discard(int(router_id))
+                self.pending_rescue_modes.pop(int(router_id), None)
             return
+
+        if handoff_pending:
+            self.pending_rescue_handoffs.add(int(router_id))
+            self.rescue_mode_switch.set_busy(requested_mode)
+            self.set_router_monitor_ui_state("handoff")
+            self.status_label.setText("● Переподключение")
+            self.statusBar().showMessage(message)
+            return
+
+        self.pending_rescue_handoffs.discard(int(router_id))
+        self.pending_rescue_modes.pop(int(router_id), None)
 
         result = self.connection_results.get(router_id)
         context = (
@@ -5009,6 +5036,46 @@ class MainWindow(QMainWindow):
             "Переключение режима",
             message,
         )
+
+    def resolve_pending_rescue_mode(
+        self,
+        router_id: int,
+        result: object,
+    ) -> None:
+        normalized_router_id = int(router_id)
+        if normalized_router_id not in self.pending_rescue_handoffs:
+            return
+        self.pending_rescue_handoffs.discard(normalized_router_id)
+        requested_mode = self.pending_rescue_modes.pop(
+            normalized_router_id,
+            None,
+        )
+        if requested_mode is None or router_id != self.get_selected_router_id():
+            return
+        context = RescueModeService.inspect(
+            getattr(result, "internet_connections", None),
+            getattr(result, "wifi_networks", None),
+        )
+        self.rescue_mode_switch.set_context(context)
+        if context.mode == requested_mode:
+            self.statusBar().showMessage(
+                "Переподключение выполнено, выбранный режим подтверждён.",
+                5000,
+            )
+        else:
+            self.statusBar().showMessage(
+                "Связь восстановлена, но состояние режима требует проверки.",
+                8000,
+            )
+
+    def cancel_pending_rescue_mode(self, router_id: int) -> None:
+        self.pending_rescue_handoffs.discard(int(router_id))
+        pending = self.pending_rescue_modes.pop(int(router_id), None)
+        if pending is not None and router_id == self.get_selected_router_id():
+            self.statusBar().showMessage(
+                "Не удалось подтвердить режим после переподключения.",
+                8000,
+            )
 
     def wifi_network_action_completed(
         self,

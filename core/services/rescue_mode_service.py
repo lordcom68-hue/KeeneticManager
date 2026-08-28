@@ -6,11 +6,12 @@ from typing import Any
 
 RESCUER_MODE = "rescuer"
 RESCUED_MODE = "rescued"
+MIXED_MODE = "mixed"
 
 
 @dataclass
 class RescueModeContext:
-    """Снимок двух взаимоисключающих ролей роутера."""
+    """Снимок состояний WISP-клиента и точки раздачи роутера."""
 
     mode: str
     available: bool
@@ -55,14 +56,14 @@ class RescueModeContext:
 
 class RescueModeService:
     """
-    Переключает роль роутера между WISP-клиентом и точкой раздачи.
+    Управляет сочетанием WISP-клиента и точки раздачи Wi-Fi.
 
     Операции выполняются одной последовательностью в потоке роутера.
     Если второй шаг не подтверждён, уже применённые изменения
     возвращаются в исходное состояние.
     """
 
-    VALID_MODES = {RESCUER_MODE, RESCUED_MODE}
+    VALID_MODES = {RESCUER_MODE, RESCUED_MODE, MIXED_MODE}
 
     @classmethod
     def with_confirmed_mode(
@@ -75,8 +76,14 @@ class RescueModeService:
         if normalized_mode not in cls.VALID_MODES:
             return context
 
-        wisp_enabled = normalized_mode == RESCUED_MODE
-        wifi_enabled = normalized_mode == RESCUER_MODE
+        wisp_enabled = normalized_mode in {
+            RESCUED_MODE,
+            MIXED_MODE,
+        }
+        wifi_enabled = normalized_mode in {
+            RESCUER_MODE,
+            MIXED_MODE,
+        }
         wisp_connections = [
             {**item, "enabled": wisp_enabled}
             for item in context.wisp_connections
@@ -219,7 +226,7 @@ class RescueModeService:
             mode = "inactive"
             message = "WISP и раздача Wi-Fi выключены."
         else:
-            mode = "mixed"
+            mode = MIXED_MODE
             message = "WISP и раздача Wi-Fi включены одновременно."
 
         return RescueModeContext(
@@ -277,8 +284,14 @@ class RescueModeService:
         # one. This is especially important over KeenDNS: disabling WISP
         # first can terminate the same connection that must enable Wi-Fi.
         # Completed steps are still rolled back in reverse order.
-        desired_wisp = requested_mode == RESCUED_MODE
-        desired_wifi = requested_mode == RESCUER_MODE
+        desired_wisp = requested_mode in {
+            RESCUED_MODE,
+            MIXED_MODE,
+        }
+        desired_wifi = requested_mode in {
+            RESCUER_MODE,
+            MIXED_MODE,
+        }
         wisp_operations: list[
             tuple[str, object, str, bool, bool]
         ] = []
@@ -336,17 +349,29 @@ class RescueModeService:
         confirmed_after_error: list[
             tuple[str, object, str, bool, bool]
         ] = []
-        for operation in operations:
+        handoff_pending = False
+        handoff_connection_mode = ""
+        for operation_index, operation in enumerate(operations):
             kind, target, title, original, desired = operation
-            success, message, recovered = self._set_state_confirmed(
+            expected_handoff_mode = ""
+            if operation_index == len(operations) - 1:
+                expected_handoff_mode = self._expected_handoff_mode(
+                    kind,
+                    desired,
+                )
+            success, message, recovered, pending = self._set_state_confirmed(
                 kind,
                 target,
                 desired,
+                expected_handoff_mode=expected_handoff_mode,
             )
             if success:
                 changed.append(operation)
                 if recovered:
                     confirmed_after_error.append(operation)
+                if pending:
+                    handoff_pending = True
+                    handoff_connection_mode = expected_handoff_mode
                 continue
 
             # Даже операция, вернувшая ошибку, могла примениться
@@ -393,11 +418,11 @@ class RescueModeService:
                 result_details,
             )
 
-        title = (
-            "Спасатель"
-            if requested_mode == RESCUER_MODE
-            else "Спасаемый"
-        )
+        title = {
+            RESCUER_MODE: "Спасатель",
+            RESCUED_MODE: "Спасаемый",
+            MIXED_MODE: "Смешанный",
+        }[requested_mode]
         if not operations:
             message = f"Режим «{title}» уже включён."
         elif requested_mode == RESCUER_MODE:
@@ -405,14 +430,22 @@ class RescueModeService:
                 "Режим «Спасатель» включён: Wireless ISP выключен, "
                 "раздача Wi-Fi включена."
             )
-        else:
+        elif requested_mode == RESCUED_MODE:
             message = (
                 "Режим «Спасаемый» включён: Wireless ISP включён, "
                 "раздача Wi-Fi выключена."
             )
+        else:
+            message = (
+                "Режим «Смешанный» включён: Wireless ISP и "
+                "раздача Wi-Fi включены одновременно."
+            )
         details = {
             "mode": requested_mode,
             "changed": len(operations),
+            "state": "unknown" if handoff_pending else "confirmed",
+            "handoff_pending": handoff_pending,
+            "handoff_connection_mode": handoff_connection_mode,
             "wisp_interfaces": [
                 str(item.get("interface_id") or "")
                 for item in context.wisp_connections
@@ -423,6 +456,16 @@ class RescueModeService:
                 for item in confirmed_after_error
             ],
         }
+        if handoff_pending:
+            target_title = (
+                "KeenDNS"
+                if handoff_connection_mode == "keendns"
+                else "локальный адрес"
+            )
+            message = (
+                "Команда переключения отправлена. Текущий канал управления "
+                f"ожидаемо отключился; проверяю роутер через {target_title}."
+            )
         self._record_mode_event(
             message,
             requested_mode=requested_mode,
@@ -550,11 +593,34 @@ class RescueModeService:
         kind: str,
         target: object,
         enabled: bool,
-    ) -> tuple[bool, str, bool]:
+        *,
+        expected_handoff_mode: str = "",
+    ) -> tuple[bool, str, bool, bool]:
         """Apply a state and resolve an ambiguous lost HTTP response."""
+        attempts = getattr(
+            getattr(self.client, "diagnostics", None),
+            "connection_attempts",
+            None,
+        )
+        previous_attempt = (
+            attempts[-1]
+            if isinstance(attempts, list) and attempts
+            else None
+        )
         success, message = self._set_state(kind, target, enabled)
         if success:
-            return True, message, False
+            return (
+                True,
+                message,
+                False,
+                bool(expected_handoff_mode),
+            )
+
+        if (
+            expected_handoff_mode
+            and self._last_failure_allows_handoff(previous_attempt)
+        ):
+            return True, message, False, True
 
         verified, verification_message = self._verify_state(
             kind,
@@ -569,6 +635,7 @@ class RescueModeService:
                     "состояние подтверждено повторным чтением."
                 ),
                 True,
+                False,
             )
 
         verification_suffix = (
@@ -576,7 +643,39 @@ class RescueModeService:
             if verification_message
             else ""
         )
-        return False, str(message) + verification_suffix, False
+        return False, str(message) + verification_suffix, False, False
+
+    def _expected_handoff_mode(
+        self,
+        kind: str,
+        enabled: bool,
+    ) -> str:
+        """Return the alternate management path lost by this operation."""
+        if enabled:
+            return ""
+
+        connection_type = str(
+            getattr(self.client, "connection_type", "") or ""
+        ).strip().lower()
+        if kind == "wifi" and "keendns" not in connection_type:
+            return "keendns"
+        if kind == "wisp" and "keendns" in connection_type:
+            return "local"
+        return ""
+
+    def _last_failure_allows_handoff(
+        self,
+        previous_attempt: object,
+    ) -> bool:
+        diagnostics = getattr(self.client, "diagnostics", None)
+        attempts = getattr(diagnostics, "connection_attempts", None)
+        if not isinstance(attempts, list) or not attempts:
+            return False
+        latest = attempts[-1]
+        if latest is previous_attempt or not isinstance(latest, dict):
+            return False
+        failure_kind = str(latest.get("failure_kind") or "").lower()
+        return failure_kind in {"connection_error", "timeout"}
 
     def _verify_state(
         self,
@@ -632,7 +731,7 @@ class RescueModeService:
         for kind, target, title, original, _desired in reversed(
             operations
         ):
-            success, message, _recovered = self._set_state_confirmed(
+            success, message, _recovered, _pending = self._set_state_confirmed(
                 kind,
                 target,
                 original,

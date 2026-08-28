@@ -5,6 +5,7 @@ import unittest
 from core.connection_worker import RouterMonitor
 from core.rci import DiagnosticCollector
 from core.services.rescue_mode_service import (
+    MIXED_MODE,
     RESCUED_MODE,
     RESCUER_MODE,
     RescueModeService,
@@ -113,8 +114,10 @@ class FakeClient:
         fail_wisp_when: bool | None = None,
         confirm_wifi_after_failure: bool = False,
         confirm_wisp_after_failure: bool = False,
+        connection_type: str = "Локальная сеть",
     ) -> None:
         self.log: list[tuple] = []
+        self.connection_type = connection_type
         self.diagnostics = DiagnosticCollector()
         self.interface_service = FakeInterfaceService(
             self.log,
@@ -130,14 +133,14 @@ class FakeClient:
 
 
 class RescueModeInspectionTests(unittest.TestCase):
-    def test_mixed_state_is_not_reported_as_active_mode(self) -> None:
+    def test_mixed_state_is_reported_as_active_mode(self) -> None:
         context = RescueModeService.inspect(
             [wisp(True)],
             [wifi(True)],
         )
 
         self.assertTrue(context.available)
-        self.assertEqual(context.mode, "mixed")
+        self.assertEqual(context.mode, MIXED_MODE)
         self.assertIn("одновременно", context.message)
 
     def test_detects_both_active_modes(self) -> None:
@@ -232,7 +235,7 @@ class RescueModeOperationTests(unittest.TestCase):
             [wifi(True)],
         )
 
-        success, message, _details = (
+        success, message, details = (
             client.rescue_mode_service.apply(
                 RESCUED_MODE,
                 context.payload(),
@@ -251,6 +254,101 @@ class RescueModeOperationTests(unittest.TestCase):
                 ("wifi", "1234", False),
             ],
         )
+        self.assertTrue(details["handoff_pending"])
+        self.assertEqual(details["handoff_connection_mode"], "keendns")
+        self.assertEqual(details["state"], "unknown")
+
+    def test_lost_management_response_starts_handoff_without_rollback(self) -> None:
+        client = FakeClient(fail_wifi_when=False)
+        original_set_enabled = (
+            client.wifi_network_service.set_network_enabled
+        )
+
+        def fail_after_connection_loss(reference, enabled):
+            client.diagnostics.connection_attempts.append(
+                {"failure_kind": "connection_error"}
+            )
+            return original_set_enabled(reference, enabled)
+
+        client.wifi_network_service.set_network_enabled = (
+            fail_after_connection_loss
+        )
+        context = RescueModeService.inspect([wisp(True)], [wifi(True)])
+
+        success, message, details = client.rescue_mode_service.apply(
+            RESCUED_MODE,
+            context.payload(),
+        )
+
+        self.assertTrue(success, message)
+        self.assertEqual(client.log, [("wifi", "1234", False)])
+        self.assertTrue(details["handoff_pending"])
+        self.assertEqual(details["handoff_connection_mode"], "keendns")
+        self.assertNotIn("восстановлено", message.lower())
+
+    def test_keen_dns_wisp_shutdown_hands_off_to_local_address(self) -> None:
+        client = FakeClient(connection_type="KeenDNS")
+        context = RescueModeService.inspect([wisp(True)], [wifi(True)])
+
+        success, message, details = client.rescue_mode_service.apply(
+            RESCUER_MODE,
+            context.payload(),
+        )
+
+        self.assertTrue(success, message)
+        self.assertEqual(details["handoff_connection_mode"], "local")
+        self.assertTrue(details["handoff_pending"])
+
+    def test_mixed_enables_wisp_and_wifi_without_disabling_either(self) -> None:
+        client = FakeClient()
+        context = RescueModeService.inspect(
+            [wisp(False)],
+            [wifi(False)],
+        )
+
+        success, message, details = client.rescue_mode_service.apply(
+            MIXED_MODE,
+            context.payload(),
+        )
+
+        self.assertTrue(success, message)
+        self.assertEqual(
+            client.log,
+            [
+                (
+                    "wisp",
+                    "WifiMaster0/WifiStation0",
+                    True,
+                ),
+                ("wifi", "1234", True),
+            ],
+        )
+        self.assertEqual(details["mode"], MIXED_MODE)
+        self.assertIn("одновременно", message)
+        event = client.diagnostics.events[-1]
+        self.assertEqual(event["details"]["requested_mode"], MIXED_MODE)
+        self.assertEqual(
+            [
+                step["requested_enabled"]
+                for step in event["details"]["completed_steps"]
+            ],
+            [True, True],
+        )
+
+    def test_confirmed_mixed_mode_marks_both_sides_enabled(self) -> None:
+        context = RescueModeService.inspect(
+            [wisp(False)],
+            [wifi(True)],
+        )
+
+        confirmed = RescueModeService.with_confirmed_mode(
+            context,
+            MIXED_MODE,
+        )
+
+        self.assertEqual(confirmed.mode, MIXED_MODE)
+        self.assertTrue(confirmed.wisp_connections[0]["enabled"])
+        self.assertTrue(confirmed.wifi_networks[0]["enabled"])
 
     def test_second_step_failure_rolls_back_first_step(self) -> None:
         client = FakeClient(fail_wisp_when=False)
@@ -386,6 +484,37 @@ class RescueModeOperationTests(unittest.TestCase):
         self.assertTrue(refresh_required)
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0][0:3], (44, RESCUER_MODE, True))
+
+    def test_monitor_defers_mode_action_until_session_is_connected(self) -> None:
+        client = FakeClient()
+        client.connected = False
+        monitor = RouterMonitor(
+            {"id": 45, "status": True},
+            paused=True,
+        )
+        monitor.emit_immediate_refresh = lambda _client: None
+        events: list[tuple] = []
+        monitor.rescue_mode_action_completed.connect(
+            lambda *args: events.append(args)
+        )
+        context = RescueModeService.inspect(
+            [wisp(False)],
+            [wifi(False)],
+        )
+        monitor.request_rescue_mode(MIXED_MODE, context.payload())
+
+        processed_offline = monitor.process_actions(client)
+
+        self.assertFalse(processed_offline)
+        self.assertEqual(client.log, [])
+        self.assertEqual(events, [])
+
+        client.connected = True
+        processed_online = monitor.process_actions(client)
+
+        self.assertTrue(processed_online)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0:3], (45, MIXED_MODE, True))
 
 
 if __name__ == "__main__":

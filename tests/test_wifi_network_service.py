@@ -300,6 +300,26 @@ class FakeClient:
             ):
                 profile["band"] = []
                 continue
+            if isinstance(value, dict) and value.get("no") is True:
+                profile.pop(key, None)
+                continue
+            if key == "wpa" and isinstance(value, dict):
+                saved_wpa = profile.get("wpa")
+                if not isinstance(saved_wpa, dict):
+                    saved_wpa = {}
+                for wpa_key, wpa_value in value.items():
+                    if (
+                        isinstance(wpa_value, dict)
+                        and wpa_value.get("no") is True
+                    ):
+                        saved_wpa.pop(wpa_key, None)
+                    else:
+                        saved_wpa[wpa_key] = copy.deepcopy(wpa_value)
+                if saved_wpa:
+                    profile["wpa"] = saved_wpa
+                else:
+                    profile.pop("wpa", None)
+                continue
             if (
                 isinstance(value, dict)
                 and isinstance(profile.get(key), dict)
@@ -1535,6 +1555,18 @@ class WiFiNetworkServiceTests(unittest.TestCase):
                 "WifiMaster1/AccessPoint2",
             ],
         )
+        self.assertEqual(
+            details["mws_command_fields"],
+            [
+                "band",
+                "bind",
+                "enable",
+                "encryption",
+                "id",
+                "ssid",
+                "wpa",
+            ],
+        )
         commands = client.batches[0][1]
         self.assertEqual(
             commands[0],
@@ -1546,21 +1578,6 @@ class WiFiNetworkServiceTests(unittest.TestCase):
                         "band": ["0", "1"],
                         "encryption": "wpa2",
                         "ssid": {"name": "Family", "hide": False},
-                        "schedule": {"no": True},
-                        "wps": {"enable": False},
-                        "peer-isolation": False,
-                        "rrm": {"enable": False},
-                        "ft": {
-                            "enable": False,
-                            "skip-band": {"no": True},
-                            "mdid": {"no": True},
-                            "iapp": {"key": {"no": True}},
-                        },
-                        "band-steering": {
-                            "enable": False,
-                            "prefer-band": {"no": True},
-                        },
-                        "mlo": {"enable": False},
                         "enable": True,
                         "wpa": {"psk": "12345678"},
                     }
@@ -1570,6 +1587,499 @@ class WiFiNetworkServiceTests(unittest.TestCase):
         self.assertFalse(
             any("parse" in item for item in commands if isinstance(item, dict))
         )
+
+    def test_create_adapts_optional_fields_to_kn3711_schema(self) -> None:
+        service = WiFiNetworkService(FakeClient())
+        command = service._build_logical_create_command(
+            profile_id="wlan0",
+            bridge_id="Bridge0",
+            bands=("2.4", "5"),
+            ssid="Family",
+            password="12345678",
+            security="wpa2",
+            hidden=False,
+            enabled=True,
+            existing_profiles={
+                "DEFAULT__": {
+                    "band": ["1"],
+                    "bind": {"interface": "Bridge0"},
+                    "ssid": {"name": "Keenetic-2096"},
+                    "encryption": "wpa2+3",
+                    "wpa": {"psk": "redacted"},
+                    "wps": {"enable": True},
+                    "rrm": {"enable": True},
+                    "ft": {"mdid": "db", "enable": True},
+                    "enable": True,
+                }
+            },
+        )
+
+        profile = command["mws"]["wlan"]
+        self.assertEqual(profile["wps"], {"enable": False})
+        self.assertEqual(profile["rrm"], {"enable": False})
+        self.assertEqual(
+            profile["ft"],
+            {"enable": False, "mdid": {"no": True}},
+        )
+        for unsupported in (
+            "schedule",
+            "peer-isolation",
+            "band-steering",
+            "mlo",
+        ):
+            self.assertNotIn(unsupported, profile)
+        self.assertNotIn("skip-band", profile["ft"])
+        self.assertNotIn("iapp", profile["ft"])
+
+    def test_create_preserves_supported_extended_mws_defaults(self) -> None:
+        service = WiFiNetworkService(FakeClient())
+        supported_profile = {
+            "schedule": "Work",
+            "wps": {"enable": True},
+            "peer-isolation": True,
+            "rrm": {"enable": True},
+            "ft": {
+                "enable": True,
+                "skip-band": ["0"],
+                "mdid": "db",
+                "iapp": {"key": "secret"},
+            },
+            "band-steering": {
+                "enable": True,
+                "prefer-band": "1",
+            },
+            "mlo": {"enable": True},
+        }
+        command = service._build_logical_create_command(
+            profile_id="wlan0",
+            bridge_id="Bridge0",
+            bands=("5",),
+            ssid="Family",
+            password="",
+            security="open",
+            hidden=False,
+            enabled=True,
+            existing_profiles={"DEFAULT__": supported_profile},
+        )
+
+        profile = command["mws"]["wlan"]
+        self.assertEqual(profile["encryption"], "none")
+        self.assertEqual(profile["schedule"], {"no": True})
+        self.assertFalse(profile["wps"]["enable"])
+        self.assertFalse(profile["peer-isolation"])
+        self.assertFalse(profile["rrm"]["enable"])
+        self.assertEqual(
+            profile["ft"],
+            {
+                "enable": False,
+                "skip-band": {"no": True},
+                "mdid": {"no": True},
+                "iapp": {"key": {"no": True}},
+            },
+        )
+        self.assertEqual(
+            profile["band-steering"],
+            {"enable": False, "prefer-band": {"no": True}},
+        )
+        self.assertEqual(profile["mlo"], {"enable": False})
+        self.assertNotIn("wpa", profile)
+
+    def test_create_maps_modern_security_modes_to_mws(self) -> None:
+        service = WiFiNetworkService(FakeClient())
+        cases = (
+            ("wpa2", "wpa2", True),
+            ("wpa2_wpa3", "wpa2+3", True),
+            ("wpa3", "wpa3", True),
+            ("owe", "owe", False),
+            ("open", "none", False),
+        )
+        for security, expected_encryption, expects_password in cases:
+            with self.subTest(security=security):
+                command = service._build_logical_create_command(
+                    profile_id="wlan0",
+                    bridge_id="Bridge0",
+                    bands=("5",),
+                    ssid="Modern",
+                    password="12345678",
+                    security=security,
+                    hidden=False,
+                    enabled=True,
+                    existing_profiles={},
+                )
+                profile = command["mws"]["wlan"]
+                self.assertEqual(
+                    profile["encryption"],
+                    expected_encryption,
+                )
+                self.assertEqual("wpa" in profile, expects_password)
+
+    def test_logical_security_modes_are_normalized_for_ui(self) -> None:
+        service = WiFiNetworkService(FakeClient())
+        cases = {
+            "none": "open",
+            "owe": "owe",
+            "wpa2": "wpa2",
+            "wpa2+3": "wpa2_wpa3",
+            "wpa2+wpa3": "wpa2_wpa3",
+            "wpa3": "wpa3",
+        }
+        for encryption, expected in cases.items():
+            with self.subTest(encryption=encryption):
+                self.assertEqual(
+                    service._logical_security_mode(
+                        {"encryption": encryption},
+                        "unknown",
+                    ),
+                    expected,
+                )
+        self.assertEqual(
+            service._logical_security_mode({}, "unknown"),
+            "open",
+        )
+
+    def test_update_mws_network_changes_modern_security_mode(self) -> None:
+        interface_id = "WifiMaster0/AccessPoint2"
+
+        def make_client(encryption: str) -> FakeClient:
+            return FakeClient(
+                runtime={
+                    "WifiMaster0": {"id": "WifiMaster0"},
+                    interface_id: {
+                        "id": interface_id,
+                        "type": "AccessPoint",
+                        "ssid": "Modern",
+                        "state": "up",
+                        "link": "up",
+                    },
+                },
+                config={
+                    "Bridge0": {},
+                    interface_id: {
+                        "id": interface_id,
+                        "type": "AccessPoint",
+                        "ssid": "Modern",
+                    },
+                },
+                mws_config={
+                    "wlan0": {
+                        "band": ["0"],
+                        "bind": {"interface": "Bridge0"},
+                        "ssid": {"name": "Modern", "hide": False},
+                        "encryption": encryption,
+                        "wpa": {"psk": "old-password"},
+                        "rrm": {"enable": True},
+                        "ft": {"enable": True, "mdid": "db"},
+                        "enable": True,
+                    }
+                },
+                mws_runtime={
+                    "wlan0": {
+                        "band": {
+                            "0": {
+                                "enabled": True,
+                                "access-point": {interface_id: {}},
+                            }
+                        }
+                    }
+                },
+            )
+
+        client = make_client("owe")
+        success, message, _details = WiFiNetworkService(
+            client
+        ).update_network(
+            [interface_id],
+            {
+                "mws_profile_id": "wlan0",
+                "ssid": "Modern",
+                "security": "wpa3",
+                "password": "12345678",
+                "change_password": True,
+                "change_security": True,
+                "hidden": False,
+            },
+        )
+        self.assertTrue(success, message)
+        self.assertEqual(client.mws_config["wlan0"]["encryption"], "wpa3")
+        self.assertEqual(
+            client.mws_config["wlan0"]["wpa"]["psk"],
+            "12345678",
+        )
+        logical_command = client.batches[0][1][0]["mws"]["wlan"]
+        self.assertEqual(logical_command["band"], ["0"])
+        self.assertEqual(
+            logical_command["bind"], {"interface": "Bridge0"}
+        )
+        self.assertEqual(logical_command["rrm"], {"enable": True})
+        self.assertEqual(
+            logical_command["ft"], {"enable": True, "mdid": "db"}
+        )
+        self.assertFalse(
+            any(
+                " encryption " in str(command.get("parse") or "")
+                for command in client.batches[0][1]
+            )
+        )
+
+        client = make_client("wpa2+3")
+        success, message, _details = WiFiNetworkService(
+            client
+        ).update_network(
+            [interface_id],
+            {
+                "mws_profile_id": "wlan0",
+                "ssid": "Modern",
+                "security": "open",
+                "password": "",
+                "change_password": False,
+                "change_security": True,
+                "hidden": False,
+            },
+        )
+        self.assertTrue(success, message)
+        self.assertNotIn("encryption", client.mws_config["wlan0"])
+        self.assertNotIn("wpa", client.mws_config["wlan0"])
+        open_command = client.batches[0][1][0]["mws"]["wlan"]
+        self.assertEqual(open_command["encryption"], {"no": True})
+        self.assertEqual(
+            open_command["wpa"], {"psk": {"no": True}}
+        )
+        self.assertFalse(
+            any(
+                "encryption" in str(command.get("parse") or "")
+                or "authentication" in str(command.get("parse") or "")
+                for command in client.batches[0][1]
+            )
+        )
+
+    def test_security_update_uses_full_profile_on_strict_router(self) -> None:
+        interface_id = "WifiMaster0/AccessPoint2"
+
+        class StrictSecurityUpdateClient(FakeClient):
+            def _apply_mws_wlan(self, wlan: dict[str, Any]) -> None:
+                payload = copy.deepcopy(wlan)
+                if "encryption" in payload and not {
+                    "band",
+                    "bind",
+                    "enable",
+                }.issubset(payload):
+                    payload.pop("encryption", None)
+                super()._apply_mws_wlan(payload)
+
+        client = StrictSecurityUpdateClient(
+            runtime={
+                interface_id: {
+                    "id": interface_id,
+                    "type": "AccessPoint",
+                    "ssid": "Modern",
+                    "state": "up",
+                    "link": "up",
+                }
+            },
+            config={
+                "Bridge0": {},
+                interface_id: {
+                    "id": interface_id,
+                    "type": "AccessPoint",
+                    "ssid": "Modern",
+                },
+            },
+            mws_config={
+                "wlan0": {
+                    "band": ["0"],
+                    "bind": {"interface": "Bridge0"},
+                    "ssid": {"name": "Modern", "hide": False},
+                    "encryption": "wpa2+3",
+                    "wpa": {"psk": "old-password"},
+                    "rrm": {"enable": True},
+                    "enable": True,
+                }
+            },
+            mws_runtime={
+                "wlan0": {
+                    "band": {
+                        "0": {
+                            "enabled": True,
+                            "access-point": {interface_id: {}},
+                        }
+                    }
+                }
+            },
+        )
+
+        success, message, _details = WiFiNetworkService(
+            client
+        ).update_network(
+            [interface_id],
+            {
+                "mws_profile_id": "wlan0",
+                "ssid": "Modern",
+                "security": "open",
+                "password": "",
+                "change_password": False,
+                "change_security": True,
+                "hidden": False,
+            },
+        )
+
+        self.assertTrue(success, message)
+        self.assertNotIn("encryption", client.mws_config["wlan0"])
+        self.assertNotIn("wpa", client.mws_config["wlan0"])
+        sent = client.batches[0][1][0]["mws"]["wlan"]
+        self.assertEqual(sent["band"], ["0"])
+        self.assertEqual(sent["bind"], {"interface": "Bridge0"})
+        self.assertTrue(sent["enable"])
+        self.assertEqual(sent["rrm"], {"enable": True})
+        self.assertEqual(sent["encryption"], {"no": True})
+        self.assertEqual(sent["wpa"], {"psk": {"no": True}})
+
+    def test_update_rolls_back_unconfirmed_security_mode(self) -> None:
+        interface_id = "WifiMaster0/AccessPoint2"
+
+        class IgnoreEncryptionClient(FakeClient):
+            def _apply_mws_wlan(self, wlan: dict[str, Any]) -> None:
+                payload = copy.deepcopy(wlan)
+                payload.pop("encryption", None)
+                super()._apply_mws_wlan(payload)
+
+        client = IgnoreEncryptionClient(
+            runtime={
+                interface_id: {
+                    "id": interface_id,
+                    "type": "AccessPoint",
+                    "ssid": "Modern",
+                    "state": "up",
+                    "link": "up",
+                }
+            },
+            config={
+                "Bridge0": {},
+                interface_id: {
+                    "id": interface_id,
+                    "type": "AccessPoint",
+                    "ssid": "Modern",
+                },
+            },
+            mws_config={
+                "wlan0": {
+                    "band": ["0"],
+                    "bind": {"interface": "Bridge0"},
+                    "ssid": {"name": "Modern", "hide": False},
+                    "encryption": "wpa2",
+                    "wpa": {"psk": "old-password"},
+                    "enable": True,
+                }
+            },
+            mws_runtime={
+                "wlan0": {
+                    "band": {
+                        "0": {
+                            "enabled": True,
+                            "access-point": {interface_id: {}},
+                        }
+                    }
+                }
+            },
+        )
+        success, message, details = WiFiNetworkService(
+            client
+        ).update_network(
+            [interface_id],
+            {
+                "mws_profile_id": "wlan0",
+                "ssid": "Modern",
+                "security": "wpa3",
+                "password": "12345678",
+                "change_password": True,
+                "change_security": True,
+                "hidden": False,
+            },
+        )
+
+        self.assertFalse(success)
+        self.assertIn("режим безопасности не сохранён", message)
+        self.assertTrue(details["rolled_back"])
+        self.assertEqual(client.mws_config["wlan0"]["encryption"], "wpa2")
+
+    def test_rollback_restores_previous_open_mws_security(self) -> None:
+        interface_id = "WifiMaster0/AccessPoint2"
+        client = FakeClient(
+            runtime={
+                interface_id: {
+                    "id": interface_id,
+                    "type": "AccessPoint",
+                    "ssid": "Modern",
+                    "state": "up",
+                    "link": "up",
+                }
+            },
+            config={
+                "Bridge0": {},
+                interface_id: {
+                    "id": interface_id,
+                    "type": "AccessPoint",
+                    "ssid": "Modern",
+                    "up": True,
+                },
+            },
+            mws_config={
+                "wlan0": {
+                    "band": ["0"],
+                    "bind": {"interface": "Bridge0"},
+                    "ssid": {"name": "Modern", "hide": False},
+                    "encryption": "wpa3",
+                    "wpa": {"psk": "new-password"},
+                    "enable": True,
+                }
+            },
+            mws_runtime={
+                "wlan0": {
+                    "band": {
+                        "0": {
+                            "enabled": True,
+                            "access-point": {interface_id: {}},
+                        }
+                    }
+                }
+            },
+        )
+        previous_open_profile = {
+            "band": ["0"],
+            "bind": {"interface": "Bridge0"},
+            "ssid": {"name": "Modern", "hide": False},
+            "enable": True,
+        }
+
+        success, message = WiFiNetworkService(
+            client
+        )._rollback_network_update(
+            {
+                "interfaces": [interface_id],
+                "physical": {
+                    interface_id: {
+                        "ssid": "Modern",
+                        "hidden": False,
+                        "security": "open",
+                        "password": "",
+                        "enabled": True,
+                    }
+                },
+                "preserved_interface_states": {interface_id: True},
+                "profile_id": "wlan0",
+                "profile_config": previous_open_profile,
+                "logical_ssid": "Modern",
+                "logical_hidden": False,
+                "logical_password": "",
+                "logical_bands": ["2.4"],
+                "logical_enabled": True,
+                "change_password": True,
+                "change_security": True,
+            }
+        )
+
+        self.assertTrue(success, message)
+        self.assertNotIn("encryption", client.mws_config["wlan0"])
+        self.assertNotIn("wpa", client.mws_config["wlan0"])
 
     def test_create_uses_legacy_mode_when_router_has_no_mws_api(self) -> None:
         interface_id = "WifiMaster0/AccessPoint2"
@@ -2641,6 +3151,76 @@ class WiFiNetworkServiceTests(unittest.TestCase):
         self.assertEqual(len(networks), 1)
         self.assertFalse(networks[0]["protected_system_network"])
         self.assertTrue(networks[0]["deletable"])
+
+    def test_default_mws_profile_allows_band_edit_and_delete(self) -> None:
+        interface_id = "WifiMaster1/AccessPoint0"
+        client = FakeClient(
+            runtime={
+                interface_id: {
+                    "id": interface_id,
+                    "type": "AccessPoint",
+                    "ssid": "Keenetic-2096",
+                    "state": "up",
+                    "link": "up",
+                }
+            },
+            config={
+                "Bridge0": {},
+                interface_id: {
+                    "id": interface_id,
+                    "type": "AccessPoint",
+                    "ssid": "Keenetic-2096",
+                    "up": True,
+                },
+            },
+            mws_config={
+                "DEFAULT__": {
+                    "band": ["1"],
+                    "bind": {"interface": "Bridge0"},
+                    "ssid": {"name": "Keenetic-2096"},
+                    "encryption": "wpa2+3",
+                    "wpa": {"psk": "old-password"},
+                    "enable": True,
+                }
+            },
+            mws_runtime={
+                "DEFAULT__": {
+                    "band": {
+                        "1": {
+                            "enabled": True,
+                            "access-point": {interface_id: {}},
+                        }
+                    }
+                }
+            },
+        )
+        service = WiFiNetworkService(client)
+        snapshot = WifiLogicalSnapshot(
+            config=copy.deepcopy(client.mws_config),
+            runtime=copy.deepcopy(client.mws_runtime),
+        )
+        networks = service._reconcile_logical_networks(
+            [],
+            snapshot,
+            interface_data=client.interface_service.runtime,
+            interface_config_data=client.interface_service.config,
+        )
+
+        self.assertEqual(len(networks), 1)
+        network = networks[0]
+        self.assertTrue(network["protected_system_network"])
+        self.assertTrue(network["mws_band_editable"])
+        self.assertTrue(network["deletable"])
+
+        success, message, details = service.delete_network(network)
+
+        self.assertTrue(success, message)
+        self.assertEqual(details["mws_profile_id"], "DEFAULT__")
+        self.assertNotIn("DEFAULT__", client.mws_config)
+        self.assertEqual(
+            client.batches[0][1][0],
+            {"mws": {"wlan": {"id": "DEFAULT__", "no": True}}},
+        )
 
     def test_bandless_mws_profile_is_deleted_without_interfaces(self) -> None:
         client = FakeClient(

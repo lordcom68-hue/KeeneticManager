@@ -95,6 +95,13 @@ class RouterMonitorActionPanelTests(unittest.TestCase):
         self.assertTrue(self.panel.connect_button.isHidden())
         self.assertTrue(self.panel.disconnect_button.isHidden())
 
+    def test_handoff_state_is_visible_and_can_be_stopped(self) -> None:
+        self.panel.set_state("handoff")
+
+        self.assertIn("переподключения", self.panel.status_label.text())
+        self.assertFalse(self.panel.disconnect_button.isHidden())
+        self.assertEqual(self.panel.disconnect_button.text(), "Остановить")
+
     def test_active_and_stopping_monitors_both_block_management(self) -> None:
         fake_window = SimpleNamespace(
             router_monitors={1: object()},
@@ -157,7 +164,7 @@ class RouterMonitorActionPanelTests(unittest.TestCase):
         )
         self.assertEqual(
             MainWindow.router_monitor_ui_state(fake_window, 4),
-            "stopping",
+            "disconnected",
         )
         self.assertEqual(
             MainWindow.router_monitor_ui_state(fake_window, 5),

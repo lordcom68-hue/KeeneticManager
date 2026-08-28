@@ -653,6 +653,10 @@ class KeeneticClient:
         self.usb_service.reset()
         self.refresh_service.clear()
 
+    def abort_pending_io(self) -> None:
+        """Best-effort interruption used when a monitor is being stopped."""
+        self.transport.close(clear_target=False)
+
     def _compatibility_profile_dict(self) -> dict[str, Any] | None:
         return (
             self.compatibility_profile.to_dict()

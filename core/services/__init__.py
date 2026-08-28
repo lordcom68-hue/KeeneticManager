@@ -214,6 +214,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
         "router_self_check_service",
         "RouterSelfCheckService",
     ),
+    "MIXED_MODE": ("rescue_mode_service", "MIXED_MODE"),
     "RESCUED_MODE": ("rescue_mode_service", "RESCUED_MODE"),
     "RESCUER_MODE": ("rescue_mode_service", "RESCUER_MODE"),
     "RescueModeContext": ("rescue_mode_service", "RescueModeContext"),

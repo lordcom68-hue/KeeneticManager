@@ -45,6 +45,11 @@ class RouterMonitorActionPanel(QFrame):
             "#FBBF24",
             "stop",
         ),
+        "handoff": (
+            "Ожидание переподключения…",
+            "#FBBF24",
+            "stop",
+        ),
         "authentication_required": (
             "Требуется авторизация",
             "#FB7185",

@@ -60,6 +60,27 @@ class WiFiNetworkService(WifiNetworkReadMixin):
         "2": "6",
     }
     FIRST_ADDITIONAL_SLOT_INDEX = 2
+    MWS_SECURITY_ENCRYPTION = {
+        "open": "none",
+        "owe": "owe",
+        "wpa2": "wpa2",
+        "wpa2_wpa3": "wpa2+3",
+        "wpa3": "wpa3",
+    }
+    MWS_SECURITY_OPTIONS = (
+        ("WPA2-PSK", "wpa2"),
+        ("WPA2/WPA3-PSK (смешанный)", "wpa2_wpa3"),
+        ("WPA3-SAE", "wpa3"),
+        ("OWE (открытая с шифрованием)", "owe"),
+        ("Открытая сеть (без шифрования)", "open"),
+    )
+    LEGACY_SECURITY_OPTIONS = (
+        ("WPA2-PSK", "wpa2"),
+        ("Открытая сеть", "open"),
+    )
+    PASSWORD_SECURITY_MODES = frozenset(
+        {"wpa2", "wpa2_wpa3", "wpa3"}
+    )
 
     def __init__(self, client: Any) -> None:
         self.client = client
@@ -143,6 +164,40 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             return True
         return 8 <= len(text) <= 63 and "\n" not in text
 
+    @classmethod
+    def normalize_security_mode(cls, value: Any) -> str:
+        text = str(value or "").strip().casefold()
+        compact = text.replace("-psk", "").replace("-sae", "")
+        compact = compact.replace(" ", "").replace("_", "")
+        if compact in {"open", "none", "disabled"}:
+            return "open"
+        if compact == "owe" or compact.startswith("owe("):
+            return "owe"
+        if compact in {
+            "wpa2+3",
+            "wpa2+wpa3",
+            "wpa2/wpa3",
+            "wpa2-3",
+        } or ("wpa2" in compact and "wpa3" in compact):
+            return "wpa2_wpa3"
+        if compact == "wpa3" or compact.startswith("wpa3"):
+            return "wpa3"
+        if "wpa2" in compact:
+            return "wpa2"
+        return text
+
+    @classmethod
+    def security_uses_password(cls, security: Any) -> bool:
+        return (
+            cls.normalize_security_mode(security)
+            in cls.PASSWORD_SECURITY_MODES
+        )
+
+    @classmethod
+    def mws_encryption_value(cls, security: Any) -> str:
+        normalized = cls.normalize_security_mode(security)
+        return cls.MWS_SECURITY_ENCRYPTION.get(normalized, normalized)
+
     def create_network(
         self,
         settings: dict[str, Any],
@@ -152,7 +207,9 @@ class WiFiNetworkService(WifiNetworkReadMixin):
 
         ssid = str(settings.get("ssid") or "").strip()
         bands = self.normalize_bands(settings.get("bands"))
-        security = str(settings.get("security") or "wpa2").strip().lower()
+        security = self.normalize_security_mode(
+            settings.get("security") or "wpa2"
+        )
         password = str(settings.get("password") or "")
         hidden = bool(settings.get("hidden", False))
         enabled = bool(settings.get("enabled", True)) and bool(bands)
@@ -162,7 +219,7 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             bands=bands,
             security=security,
             password=password,
-            password_required=(security != "open"),
+            password_required=self.security_uses_password(security),
             allow_empty_bands=True,
         )
         if validation_error:
@@ -176,6 +233,16 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             interface_config_data=config,
         )
         if self._logical_management_supported is False:
+            if security not in {"wpa2", "open"}:
+                return (
+                    False,
+                    "Этот режим безопасности доступен только для "
+                    "сетей MWS на совместимых версиях KeeneticOS.",
+                    {
+                        "preflight_rejected": True,
+                        "unsupported_legacy_security": True,
+                    },
+                )
             if not capabilities.legacy_supported:
                 return (
                     False,
@@ -245,17 +312,21 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             )
 
         profile_id = self._next_logical_profile_id(logical)
+        create_command = self._build_logical_create_command(
+            profile_id=profile_id,
+            bridge_id=capabilities.home_bridge_id,
+            bands=bands,
+            ssid=ssid,
+            password=password,
+            security=security,
+            hidden=hidden,
+            enabled=enabled,
+            existing_profiles=logical.config,
+        )
+        command_profile = create_command["mws"]["wlan"]
+        command_fields = sorted(command_profile)
         commands = [
-            self._build_logical_create_command(
-                profile_id=profile_id,
-                bridge_id=capabilities.home_bridge_id,
-                bands=bands,
-                ssid=ssid,
-                password=password,
-                security=security,
-                hidden=hidden,
-                enabled=enabled,
-            ),
+            create_command,
             {"system": {"configuration": {"save": {}}}},
         ]
         success, message = self.client.execute_rci_batch(
@@ -272,6 +343,7 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 message,
                 {
                     "mws_profile_id": profile_id,
+                    "mws_command_fields": command_fields,
                     "rolled_back": rollback_ok,
                     "rollback_message": rollback_message,
                 },
@@ -283,6 +355,7 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 expected_ssid=ssid,
                 expected_bands=bands,
                 expected_enabled=enabled,
+                expected_security=security,
             )
         )
         if not verified:
@@ -301,6 +374,7 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 ),
                 {
                     "mws_profile_id": profile_id,
+                    "mws_command_fields": command_fields,
                     "expected_interfaces": expected_interfaces,
                     "interfaces": actual_interfaces,
                     "rolled_back": rollback_ok,
@@ -313,6 +387,7 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             f"Wi-Fi сеть «{ssid}» создана.",
             {
                 "mws_profile_id": profile_id,
+                "mws_command_fields": command_fields,
                 "interfaces": actual_interfaces,
                 "expected_interfaces": expected_interfaces,
                 "bands": list(bands),
@@ -335,9 +410,9 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             return False, "Нет активной сессии с роутером.", {}
 
         ssid = str(settings.get("ssid") or "").strip()
-        security = str(
+        security = self.normalize_security_mode(
             settings.get("security") or "wpa2"
-        ).strip().lower()
+        )
         password = str(settings.get("password") or "")
         hidden = bool(settings.get("hidden", False))
         bands_provided = "bands" in settings
@@ -369,7 +444,8 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             security=security,
             password=password,
             password_required=(
-                security != "open" and change_password
+                self.security_uses_password(security)
+                and change_password
             ),
             allow_empty_bands=bands_provided,
         )
@@ -515,6 +591,16 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             self._legacy_mode_supported() and not profile_id
         )
         if legacy_mode:
+            if security not in {"wpa2", "open"}:
+                return (
+                    False,
+                    "Этот режим безопасности нельзя применить к "
+                    "legacy Wi-Fi сети.",
+                    {
+                        "preflight_rejected": True,
+                        "unsupported_legacy_security": True,
+                    },
+                )
             if not effective_bands:
                 return (
                     False,
@@ -637,32 +723,6 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 },
             )
 
-        existing_encryption = str(
-            profile_config.get("encryption") or ""
-        ).strip().lower()
-        if (
-            profile_id
-            and change_security
-            and security == "open"
-            and existing_encryption not in {
-                "",
-                "open",
-                "none",
-                "disabled",
-            }
-        ):
-            return (
-                False,
-                "Переключение логической MWS-сети в открытый режим "
-                "пока заблокировано: точная команда удаления WPA "
-                "должна быть проверена отдельно.",
-                {
-                    "preflight_rejected": True,
-                    "unsupported_logical_security_change": True,
-                    "mws_profile_id": profile_id,
-                },
-            )
-
         previous_state = self._capture_update_state(
             config=config,
             runtime=runtime,
@@ -733,7 +793,11 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                     )
                 }
             )
-            if change_password or change_security:
+            # MWS is the source of truth for a logical Wi-Fi profile.  Sending
+            # another security command directly to its physical AccessPoint
+            # can race with MWS propagation and restore the previous mode.
+            # Physical commands are therefore reserved for legacy networks.
+            if (change_password or change_security) and not profile_id:
                 commands.extend(
                     self._security_commands(
                         interface_arg=interface_arg,
@@ -793,7 +857,12 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 preserved_interface_states=preserved_states,
                 verified=False,
                 verification_message=message,
-                extra_details={"batch_failed": True},
+                extra_details={
+                    "batch_failed": True,
+                    "requested_security": (
+                        security if change_security else None
+                    ),
+                },
             )
             return (
                 False,
@@ -811,6 +880,24 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             expected_interface_states=preserved_states,
             logical_profile_id=profile_id,
         )
+        if verified and profile_id:
+            logical_verified, logical_message, _ = (
+                self.verify_logical_network(
+                    profile_id=profile_id,
+                    expected_ssid=ssid,
+                    expected_bands=current_bands,
+                    expected_enabled=bool(
+                        previous_state.get("logical_enabled", True)
+                    ),
+                    expected_security=(
+                        security if change_security else None
+                    ),
+                )
+            )
+            verified = logical_verified
+            verify_message = (
+                f"{verify_message} {logical_message}".strip()
+            )
         if not verified:
             rollback_ok, rollback_message = (
                 self._rollback_network_update(previous_state)
@@ -825,6 +912,9 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 extra_details={
                     "rolled_back": rollback_ok,
                     "rollback_message": rollback_message,
+                    "requested_security": (
+                        security if change_security else None
+                    ),
                 },
             )
             return (
@@ -853,6 +943,11 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             preserved_interface_states=preserved_states,
             verified=True,
             verification_message=verify_message,
+            extra_details={
+                "requested_security": (
+                    security if change_security else None
+                ),
+            },
         )
         self._forget_cached_interfaces(interfaces)
         return (
@@ -864,6 +959,9 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 "logical_profile_updated": bool(profile_id),
                 "physical_state_preserved": True,
                 "preserved_interfaces": list(preserved_states),
+                "requested_security": (
+                    security if change_security else None
+                ),
             },
         )
 
@@ -1021,15 +1119,9 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                     )
                 }
             )
-            if change_password or change_security:
-                repair_commands.extend(
-                    self._security_commands(
-                        interface_arg=interface_arg,
-                        security=security,
-                        password=password,
-                        change_password=change_password,
-                    )
-                )
+            # Security of an MWS-managed network is applied by the logical
+            # profile.  Repeating it on a newly assigned physical AP may race
+            # with MWS and undo WPA3/OWE/open transitions.
             repair_commands.append(
                 {
                     "parse": (
@@ -1106,6 +1198,9 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 expected_ssid=ssid,
                 expected_bands=bands,
                 expected_enabled=resulting_enabled,
+                expected_security=(
+                    security if change_security else None
+                ),
             )
         )
         final_interfaces = (
@@ -1164,7 +1259,12 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             verification_message=(
                 logical_message + " " + physical_message
             ).strip(),
-            extra_details={"bands": list(bands)},
+            extra_details={
+                "bands": list(bands),
+                "requested_security": (
+                    security if change_security else None
+                ),
+            },
         )
         self._forget_cached_interfaces(
             [*old_targets, *final_interfaces]
@@ -2101,20 +2201,9 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             )
 
         # For an MWS-managed network the profile is the deletion target.
-        # Physical AP indices are assigned by KeeneticOS and may include 0/1
-        # even for user-created profiles.
-        protected = profile_id == "DEFAULT__"
-        if protected:
-            return (
-                False,
-                "Основную и гостевую системные сети удалять нельзя. "
-                "Их можно выключить или изменить.",
-                {
-                    "preflight_rejected": True,
-                    "protected": interfaces,
-                    "mws_profile_id": profile_id,
-                },
-            )
+        # Physical AP indices are assigned by KeeneticOS and may include 0/1.
+        # The built-in ``DEFAULT__`` profile is also removable in Keenetic's
+        # own web UI, so only an unresolved physical-only reference is blocked.
 
         commands = [
             {
@@ -2189,6 +2278,7 @@ class WiFiNetworkService(WifiNetworkReadMixin):
         expected_ssid: str,
         expected_bands: tuple[str, ...],
         expected_enabled: bool,
+        expected_security: str | None = None,
     ) -> tuple[bool, str, list[str]]:
         mismatches: list[str] = []
         interfaces: list[str] = []
@@ -2215,6 +2305,18 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 mismatches.append(
                     f"{profile_id}: логическое имя не сохранено"
                 )
+
+            if expected_security is not None:
+                actual_security = self._logical_security_mode(
+                    profile,
+                    "unknown",
+                )
+                if actual_security != self.normalize_security_mode(
+                    expected_security
+                ):
+                    mismatches.append(
+                        f"{profile_id}: режим безопасности не сохранён"
+                    )
 
             actual_bands = set(self._logical_profile_bands(profile))
             if set(expected_bands) != actual_bands:
@@ -2626,31 +2728,47 @@ class WiFiNetworkService(WifiNetworkReadMixin):
         change_security: bool,
         bands: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
-        patch: dict[str, Any] = {
-            "id": profile_id,
-            "ssid": {
-                "name": ssid,
-                "hide": hidden,
-            },
-        }
+        # KeeneticOS 5.01 accepts a small MWS patch for ordinary changes, but
+        # silently ignores some security transitions (notably WPA3 and open)
+        # unless the existing profile context is supplied as well.  Reusing
+        # the router's own saved profile also preserves model-specific fields
+        # without guessing which features that firmware supports.
+        patch: dict[str, Any] = (
+            copy.deepcopy(profile_config)
+            if change_security
+            else {}
+        )
+        patch["id"] = profile_id
+
+        saved_ssid = patch.get("ssid")
+        ssid_patch = (
+            copy.deepcopy(saved_ssid)
+            if isinstance(saved_ssid, dict)
+            else {}
+        )
+        ssid_patch.update({"name": ssid, "hide": hidden})
+        patch["ssid"] = ssid_patch
 
         if bands is not None:
             patch["band"] = self._logical_band_command_value(
                 bands
             )
 
-        if change_password and security != "open":
+        if change_password and self.security_uses_password(security):
             patch["wpa"] = {"psk": password}
 
-        if change_security and security == "wpa2":
-            current = str(
-                profile_config.get("encryption") or ""
-            ).strip()
-            patch["encryption"] = (
-                current
-                if "wpa" in current.lower()
-                else "wpa2"
-            )
+        if change_security:
+            if security == "open":
+                # The KeeneticOS 5.01 web UI removes both saved commands when
+                # switching an existing MWS profile to an open network.  The
+                # scalar value ``none`` is accepted during profile creation,
+                # but is silently ignored for this update transition.
+                patch["encryption"] = {"no": True}
+                patch["wpa"] = {"psk": {"no": True}}
+            else:
+                patch["encryption"] = self.mws_encryption_value(
+                    security
+                )
 
         return {"mws": {"wlan": patch}}
 
@@ -2766,17 +2884,34 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 )
             if (
                 state.get("change_password")
-                and state.get("logical_password")
             ):
+                logical_password = str(
+                    state.get("logical_password") or ""
+                )
                 logical_patch["wpa"] = {
-                    "psk": str(state["logical_password"])
+                    "psk": (
+                        logical_password
+                        if logical_password
+                        else {"no": True}
+                    )
                 }
             if state.get("change_security"):
                 encryption = str(
                     profile_config.get("encryption") or ""
                 ).strip()
-                if encryption:
-                    logical_patch["encryption"] = encryption
+                logical_patch["encryption"] = (
+                    encryption if encryption else {"no": True}
+                )
+                saved_wpa = profile_config.get("wpa")
+                saved_psk = (
+                    str(saved_wpa.get("psk") or "")
+                    if isinstance(saved_wpa, dict)
+                    else ""
+                )
+                if not saved_psk:
+                    logical_patch["wpa"] = {
+                        "psk": {"no": True}
+                    }
 
             commands.append(
                 {"mws": {"wlan": logical_patch}}
@@ -2918,6 +3053,11 @@ class WiFiNetworkService(WifiNetworkReadMixin):
                 if old_bands
                 else False
             ),
+            expected_security=(
+                self._logical_security_mode(profile_config, "open")
+                if state.get("change_security")
+                else None
+            ),
         )
         return (
             physical_verified and logical_verified,
@@ -2935,38 +3075,85 @@ class WiFiNetworkService(WifiNetworkReadMixin):
         security: str,
         hidden: bool,
         enabled: bool,
+        existing_profiles: dict[str, Any],
     ) -> dict[str, Any]:
         profile: dict[str, Any] = {
             "id": profile_id,
             "bind": {"interface": bridge_id},
             "band": self._logical_band_command_value(bands),
-            "encryption": "open" if security == "open" else "wpa2",
+            # KeeneticOS names an unencrypted MWS profile ``none``. The
+            # application's public model uses ``open`` only as a UI value.
+            "encryption": self.mws_encryption_value(security),
             "ssid": {
                 "name": ssid,
                 "hide": hidden,
             },
-            "schedule": {"no": True},
-            "wps": {"enable": False},
-            "peer-isolation": False,
-            "rrm": {"enable": False},
-            "ft": {
-                "enable": False,
-                "skip-band": {"no": True},
-                "mdid": {"no": True},
-                "iapp": {"key": {"no": True}},
-            },
-            "band-steering": {
-                "enable": False,
-                "prefer-band": {"no": True},
-            },
-            "mlo": {"enable": False},
             # Keenetic's web UI toggle reads the saved MWS field. Always
             # write it explicitly, including the enabled=True case.
             "enable": bool(enabled),
         }
-        if security != "open":
+
+        # The MWS command tree differs between KeeneticOS versions and
+        # hardware families. Sending a valid but unsupported branch makes
+        # RCI reject the whole command with ``no input``. Derive optional
+        # defaults from fields exposed by at least one existing profile.
+        optional_defaults = self._logical_create_optional_defaults(
+            existing_profiles
+        )
+        profile.update(optional_defaults)
+        if self.security_uses_password(security):
             profile["wpa"] = {"psk": password}
         return {"mws": {"wlan": profile}}
+
+    @classmethod
+    def _logical_create_optional_defaults(
+        cls,
+        existing_profiles: dict[str, Any],
+    ) -> dict[str, Any]:
+        def supports(*path: str) -> bool:
+            for candidate in existing_profiles.values():
+                current: Any = candidate
+                for key in path:
+                    if not isinstance(current, dict) or key not in current:
+                        break
+                    current = current[key]
+                else:
+                    return True
+            return False
+
+        result: dict[str, Any] = {}
+        if supports("schedule"):
+            result["schedule"] = {"no": True}
+        if supports("wps", "enable"):
+            result["wps"] = {"enable": False}
+        if supports("peer-isolation"):
+            result["peer-isolation"] = False
+        if supports("rrm", "enable"):
+            result["rrm"] = {"enable": False}
+
+        ft: dict[str, Any] = {}
+        if supports("ft", "enable"):
+            ft["enable"] = False
+        if supports("ft", "skip-band"):
+            ft["skip-band"] = {"no": True}
+        if supports("ft", "mdid"):
+            ft["mdid"] = {"no": True}
+        if supports("ft", "iapp", "key"):
+            ft["iapp"] = {"key": {"no": True}}
+        if ft:
+            result["ft"] = ft
+
+        band_steering: dict[str, Any] = {}
+        if supports("band-steering", "enable"):
+            band_steering["enable"] = False
+        if supports("band-steering", "prefer-band"):
+            band_steering["prefer-band"] = {"no": True}
+        if band_steering:
+            result["band-steering"] = band_steering
+
+        if supports("mlo", "enable"):
+            result["mlo"] = {"enable": False}
+        return result
 
     def _logical_band_command_value(
         self,
@@ -3469,10 +3656,10 @@ class WiFiNetworkService(WifiNetworkReadMixin):
             return "SSID должен содержать от 1 до 32 байт."
         if not bands and not allow_empty_bands:
             return "Выберите хотя бы один диапазон Wi-Fi."
-        if security not in {"wpa2", "open"}:
+        if security not in self.MWS_SECURITY_ENCRYPTION:
             return "Неподдерживаемый режим безопасности."
         if not self.valid_password(password, required=password_required):
-            return "Пароль WPA2 должен содержать от 8 до 63 символов."
+            return "Пароль Wi-Fi должен содержать от 8 до 63 символов."
         return ""
 
     def _session_ready(self) -> bool:

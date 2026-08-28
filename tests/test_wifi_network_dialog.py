@@ -51,6 +51,91 @@ class WiFiNetworkDialogTests(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_create_mws_offers_modern_security_modes(self) -> None:
+        dialog = WiFiNetworkDialog(
+            capabilities={
+                "mws_supported": True,
+                "supported_bands": ["2.4"],
+                "available_slots": {
+                    "2.4": ["WifiMaster0/AccessPoint2"]
+                },
+            }
+        )
+        try:
+            modes = [
+                dialog.security_combo.itemData(index)
+                for index in range(dialog.security_combo.count())
+            ]
+            self.assertEqual(
+                modes,
+                ["wpa2", "wpa2_wpa3", "wpa3", "owe", "open"],
+            )
+
+            dialog.security_combo.setCurrentIndex(
+                dialog.security_combo.findData("owe")
+            )
+            self.assertFalse(dialog.password_edit.isEnabled())
+            self.assertFalse(dialog.settings()["change_password"])
+
+            dialog.security_combo.setCurrentIndex(
+                dialog.security_combo.findData("wpa3")
+            )
+            self.assertTrue(dialog.password_edit.isEnabled())
+            self.assertTrue(dialog.settings()["change_password"])
+        finally:
+            dialog.close()
+
+    def test_create_legacy_keeps_compatible_security_modes(self) -> None:
+        dialog = WiFiNetworkDialog(
+            capabilities={
+                "mws_supported": False,
+                "legacy_supported": True,
+                "supported_bands": ["2.4"],
+                "available_slots": {
+                    "2.4": ["WifiMaster0/AccessPoint2"]
+                },
+            }
+        )
+        try:
+            modes = [
+                dialog.security_combo.itemData(index)
+                for index in range(dialog.security_combo.count())
+            ]
+            self.assertEqual(modes, ["wpa2", "open"])
+        finally:
+            dialog.close()
+
+    def test_edit_preserves_existing_mixed_security_mode(self) -> None:
+        dialog = WiFiNetworkDialog(
+            network={
+                "ssid": "Mixed",
+                "security_mode": "wpa2_wpa3",
+                "band_states": {"5": {}},
+                "mws_profile_id": "wlan1",
+            },
+            capabilities={
+                "mws_supported": True,
+                "supported_bands": ["5"],
+                "available_slots": {"5": []},
+            },
+        )
+        try:
+            modes = [
+                dialog.security_combo.itemData(index)
+                for index in range(dialog.security_combo.count())
+            ]
+            self.assertEqual(
+                modes,
+                ["wpa2", "wpa2_wpa3", "wpa3", "owe", "open"],
+            )
+            self.assertEqual(
+                dialog.security_combo.currentData(),
+                "wpa2_wpa3",
+            )
+            self.assertFalse(dialog.settings()["change_security"])
+        finally:
+            dialog.close()
+
     def test_edit_keeps_current_band_and_offers_only_free_band(self) -> None:
         dialog = WiFiNetworkDialog(
             network={

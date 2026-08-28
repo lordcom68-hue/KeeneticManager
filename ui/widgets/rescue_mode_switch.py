@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.services.rescue_mode_service import (
+    MIXED_MODE,
     RESCUED_MODE,
     RESCUER_MODE,
     RescueModeContext,
@@ -30,8 +31,8 @@ class RescueModeSwitch(QFrame):
         self._busy = False
 
         self.setObjectName("rescueModeSwitch")
-        self.setMinimumWidth(292)
-        self.setMaximumWidth(336)
+        self.setMinimumWidth(370)
+        self.setMaximumWidth(450)
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Fixed,
@@ -84,8 +85,21 @@ class RescueModeSwitch(QFrame):
             )
         )
 
+        self.mixed_button = QPushButton("Смешанный")
+        self.mixed_button.setObjectName("mixedModeButton")
+        self.mixed_button.setProperty("modeActive", False)
+        self.mixed_button.setAccessibleName(
+            "Включить смешанный режим"
+        )
+        self.mixed_button.clicked.connect(
+            lambda _checked=False: self.mode_requested.emit(
+                MIXED_MODE
+            )
+        )
+
         actions.addWidget(self.rescuer_button, 1)
         actions.addWidget(self.rescued_button, 1)
+        actions.addWidget(self.mixed_button, 1)
 
         root.addLayout(heading)
         root.addLayout(actions)
@@ -125,9 +139,10 @@ class RescueModeSwitch(QFrame):
             }
 
             QPushButton#rescuerModeButton,
-            QPushButton#rescuedModeButton {
+            QPushButton#rescuedModeButton,
+            QPushButton#mixedModeButton {
                 min-height: 30px;
-                padding: 0 12px;
+                padding: 0 8px;
                 color: #cbd5e1;
                 background: rgba(30, 41, 59, 76);
                 border: 1px solid rgba(100, 116, 139, 92);
@@ -136,7 +151,8 @@ class RescueModeSwitch(QFrame):
             }
 
             QPushButton#rescuerModeButton:hover:enabled,
-            QPushButton#rescuedModeButton:hover:enabled {
+            QPushButton#rescuedModeButton:hover:enabled,
+            QPushButton#mixedModeButton:hover:enabled {
                 color: #ffffff;
                 background: rgba(96, 165, 250, 28);
                 border-color: #60a5fa;
@@ -154,8 +170,15 @@ class RescueModeSwitch(QFrame):
                 border-color: #60a5fa;
             }
 
+            QPushButton#mixedModeButton[modeActive="true"] {
+                color: #fef3c7;
+                background: rgba(251, 191, 36, 30);
+                border-color: #fbbf24;
+            }
+
             QPushButton#rescuerModeButton:disabled,
-            QPushButton#rescuedModeButton:disabled {
+            QPushButton#rescuedModeButton:disabled,
+            QPushButton#mixedModeButton:disabled {
                 color: #64748b;
                 background: rgba(15, 23, 42, 28);
                 border-color: rgba(100, 116, 139, 55);
@@ -175,6 +198,7 @@ class RescueModeSwitch(QFrame):
         for button, button_mode in (
             (self.rescuer_button, RESCUER_MODE),
             (self.rescued_button, RESCUED_MODE),
+            (self.mixed_button, MIXED_MODE),
         ):
             button.setProperty(
                 "modeActive",
@@ -190,7 +214,7 @@ class RescueModeSwitch(QFrame):
         status = {
             RESCUER_MODE: "● Спасатель",
             RESCUED_MODE: "● Спасаемый",
-            "mixed": "● Смешанный",
+            MIXED_MODE: "● Смешанный",
             "inactive": "● Оба выключены",
         }.get(context.mode, "● Недоступен")
         self.status_label.setText(status)
@@ -200,6 +224,7 @@ class RescueModeSwitch(QFrame):
         enabled = bool(context.available)
         self.rescuer_button.setEnabled(enabled)
         self.rescued_button.setEnabled(enabled)
+        self.mixed_button.setEnabled(enabled)
 
         targets = ""
         if context.available:
@@ -218,17 +243,22 @@ class RescueModeSwitch(QFrame):
             "Включить Wireless ISP и выключить раздачу Wi-Fi."
             + targets
         )
+        self.mixed_button.setToolTip(
+            "Включить Wireless ISP и раздачу Wi-Fi одновременно."
+            + targets
+        )
 
     def set_busy(self, mode: str) -> None:
         self._busy = True
         self._set_active_mode("")
         self.rescuer_button.setEnabled(False)
         self.rescued_button.setEnabled(False)
-        title = (
-            "Спасатель"
-            if mode == RESCUER_MODE
-            else "Спасаемый"
-        )
+        self.mixed_button.setEnabled(False)
+        title = {
+            RESCUER_MODE: "Спасатель",
+            RESCUED_MODE: "Спасаемый",
+            MIXED_MODE: "Смешанный",
+        }.get(mode, "режим")
         self.status_label.setText(f"● Включение: {title}")
         self.status_label.setProperty("modeState", "busy")
         self._refresh_style(self.status_label)
@@ -243,6 +273,7 @@ class RescueModeSwitch(QFrame):
         self._refresh_style(self.status_label)
         self.rescuer_button.setEnabled(False)
         self.rescued_button.setEnabled(False)
+        self.mixed_button.setEnabled(False)
         self.setToolTip(
             "Подключитесь к роутеру с настроенным Wireless ISP "
             "и Wi-Fi сетью."

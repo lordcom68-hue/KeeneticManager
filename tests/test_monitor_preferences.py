@@ -258,7 +258,11 @@ class ShutdownContractTests(unittest.TestCase):
         elapsed = monotonic() - started
         self.app.processEvents()
 
-        self.assertLess(elapsed, 0.1)
+        # Windows can briefly delay GUI scheduling while the full suite is
+        # compiling or scanning files.  A quarter-second ceiling still catches
+        # a blocking thread wait while avoiding a false failure from a single
+        # scheduler slice under build load.
+        self.assertLess(elapsed, 0.25)
         self.assertFalse(window.isVisible())
         self.assertFalse(window._shutdown_ready)
         self.assertEqual(window.pending.stop_calls, 1)

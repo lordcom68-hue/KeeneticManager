@@ -821,8 +821,9 @@ class WifiNetworkReadMixin:
             )
             # MWS owns the physical slot allocation.  A user-created profile
             # can legitimately receive AccessPoint0/1, so an AP index must not
-            # make that logical profile undeletable.  Only the special router
-            # default profile is protected at the logical layer.
+            # make that logical profile undeletable.  ``DEFAULT__`` keeps its
+            # system identity for UI warnings, but Keenetic's own web UI lets
+            # the user edit its bands and delete it through the MWS API.
             protected = profile_id == "DEFAULT__"
 
             base["network_type"] = "wifi"
@@ -861,9 +862,7 @@ class WifiNetworkReadMixin:
                 bool(logical_switch_enabled) != bool(actual_enabled)
             )
             base["mws_requested_bands"] = list(band_states)
-            base["mws_band_editable"] = bool(
-                profile_id != "DEFAULT__"
-            )
+            base["mws_band_editable"] = True
             base["hidden"] = (
                 bool(ssid_data.get("hide"))
                 if isinstance(ssid_data, dict)
@@ -874,7 +873,7 @@ class WifiNetworkReadMixin:
                 str(base.get("security_mode") or "unknown"),
             )
             base["protected_system_network"] = protected
-            base["deletable"] = not protected
+            base["deletable"] = True
             base["editable"] = True
             base["client_count"] = len(base.get("clients") or [])
             reconciled.append(base)
@@ -1101,17 +1100,21 @@ class WifiNetworkReadMixin:
             return "Гостевая сеть"
         return "Другая Wi-Fi сеть"
 
-    @staticmethod
+    @classmethod
     def _logical_security_mode(
+        cls,
         profile: dict[str, Any],
         fallback: str,
     ) -> str:
         encryption = str(profile.get("encryption") or "").casefold()
-        if encryption in {"open", "none", "disabled"}:
+        normalized = cls.normalize_security_mode(encryption)
+        if normalized in {"open", "owe", "wpa2_wpa3", "wpa3"}:
+            return normalized
+        if not encryption and not isinstance(profile.get("wpa"), dict):
+            # In saved MWS configuration an open network is represented by
+            # the absence of both ``encryption`` and ``wpa`` commands.
             return "open"
-        if encryption in {"wpa2+3", "wpa2+wpa3", "wpa2-3"}:
-            return "WPA2-PSK + WPA3-PSK"
-        if "wpa2" in encryption or isinstance(profile.get("wpa"), dict):
+        if normalized == "wpa2" or isinstance(profile.get("wpa"), dict):
             return "wpa2"
         return fallback or "unknown"
 
