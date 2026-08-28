@@ -303,14 +303,6 @@ class KeeneticClient:
     def connected(self, value: bool) -> None:
         self.transport.connected = bool(value)
 
-    def priority_log_path(self) -> Path:
-        """Совместимый фасад PriorityService."""
-        return self.priority_service.log_path()
-
-    def write_priority_log(self, message: str) -> None:
-        """Совместимый фасад PriorityService."""
-        self.priority_service.write_log(message)
-
     def _result_state_fields(self) -> dict[str, Any]:
         state = self.transport.connection_state()
         return {
@@ -683,29 +675,11 @@ class KeeneticClient:
             interface_data=interface_data,
         )
 
-    def detect_usb_capabilities_from_version(
-        self,
-    ) -> dict[str, bool]:
-        """Совместимый фасад UsbService."""
-        return self.usb_service.detect_capabilities_from_version()
-
     @staticmethod
     def split_capability_tokens(
         value: Any,
     ) -> set[str]:
         return UsbService.split_capability_tokens(value)
-
-    def detect_usb_rci_endpoint(
-        self,
-        *,
-        allow_usb: bool,
-        allow_storage: bool,
-    ) -> str:
-        """Совместимый фасад UsbService."""
-        return self.usb_service.detect_rci_endpoint(
-            allow_usb=allow_usb,
-            allow_storage=allow_storage,
-        )
 
     def probe_optional_rci_endpoint(
         self,
@@ -1582,26 +1556,10 @@ class KeeneticClient:
             not in hidden_transports
         ]
 
-    def update_wifi_client_activity(
-        self,
-        networks: list[dict[str, Any]],
-    ) -> None:
-        """Совместимый фасад WiFiNetworkService."""
-        self.wifi_network_service.update_client_activity(networks)
-
     @staticmethod
     def safe_float(value: Any) -> float:
         """Совместимый числовой helper."""
         return WiFiNetworkService._safe_float(value)
-
-    def merge_known_wifi_networks(
-        self,
-        current_networks: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Совместимый фасад WiFiNetworkService."""
-        return self.wifi_network_service.merge_known_networks(
-            current_networks
-        )
 
     @staticmethod
     def wifi_network_cache_key(
@@ -2307,22 +2265,6 @@ class KeeneticClient:
             interface_data=interface_data,
             number_reader=self.first_number,
         )
-
-    def get_interface_statistics(
-        self,
-        interface_id: str,
-    ) -> dict[str, Any]:
-        """Совместимый фасад получения статистики интерфейса."""
-        return self.interface_service.get_statistics(
-            interface_id
-        )
-
-    def normalize_interface_statistics(
-        self,
-        data: Any,
-    ) -> dict[str, Any]:
-        """Совместимый фасад нормализации статистики."""
-        return self.interface_service.normalize_statistics(data)
 
     @staticmethod
     def first_number(
@@ -4432,17 +4374,6 @@ class KeeneticClient:
     ) -> tuple[bool, str]:
         """Совместимый фасад переподключения интерфейса."""
         return self.interface_service.reconnect(interface_id)
-
-    def verify_interface_admin_state(
-        self,
-        interface_id: str,
-        expected_enabled: bool,
-    ) -> tuple[bool, str]:
-        """Совместимый фасад проверки административного состояния."""
-        return self.interface_service.verify_admin_state(
-            interface_id=interface_id,
-            expected_enabled=expected_enabled,
-        )
 
     def extract_rci_error(
         self,
