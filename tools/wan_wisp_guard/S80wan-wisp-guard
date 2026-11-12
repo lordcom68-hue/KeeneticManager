@@ -1,0 +1,91 @@
+#!/bin/sh
+
+SUPERVISOR='/opt/sbin/wan-wisp-guard-supervisor.sh'
+PID_FILE='/tmp/wan-wisp-guard.pid'
+STATE_FILE='/tmp/wan-wisp-guard.state'
+
+is_running() {
+    [ -r "$PID_FILE" ] || return 1
+    pid="$(sed -n '1p' "$PID_FILE")"
+    case "$pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case "$cmdline" in
+        *wan-wisp-guard-supervisor.sh*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+start_service() {
+    if is_running; then
+        echo "wan-wisp-guard is already running"
+        return 0
+    fi
+
+    if [ ! -x "$SUPERVISOR" ]; then
+        echo "wan-wisp-guard supervisor is not executable: $SUPERVISOR" >&2
+        return 1
+    fi
+
+    rm -f "$PID_FILE" "$STATE_FILE"
+    "$SUPERVISOR" >/dev/null 2>&1 &
+    pid=$!
+    printf '%s\n' "$pid" > "$PID_FILE"
+    sleep 1
+    if ! is_running; then
+        rm -f "$PID_FILE"
+        echo "wan-wisp-guard failed to start" >&2
+        return 1
+    fi
+    echo "wan-wisp-guard started (pid $pid)"
+}
+
+stop_service() {
+    if ! is_running; then
+        rm -f "$PID_FILE" "$STATE_FILE"
+        echo "wan-wisp-guard is not running"
+        return 0
+    fi
+
+    pid="$(sed -n '1p' "$PID_FILE")"
+    kill "$pid" 2>/dev/null || true
+    count=0
+    while kill -0 "$pid" 2>/dev/null && [ "$count" -lt 10 ]; do
+        sleep 1
+        count=$((count + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE" "$STATE_FILE"
+    echo "wan-wisp-guard stopped"
+}
+
+check_service() {
+    if is_running; then
+        pid="$(sed -n '1p' "$PID_FILE")"
+        mode='not-applied-yet'
+        [ -r "$STATE_FILE" ] && mode="$(sed -n '1p' "$STATE_FILE")"
+        echo "wan-wisp-guard is running (pid $pid, mode $mode)"
+        return 0
+    fi
+    echo "wan-wisp-guard is stopped"
+    return 1
+}
+
+case "${1:-}" in
+    start) start_service ;;
+    stop) stop_service ;;
+    restart)
+        stop_service
+        start_service
+        ;;
+    check|status) check_service ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|check}"
+        exit 2
+        ;;
+esac

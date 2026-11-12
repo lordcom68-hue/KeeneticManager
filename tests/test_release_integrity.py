@@ -322,14 +322,14 @@ class ReleaseIntegrityTests(unittest.TestCase):
 
         self.assertTrue(
             KeeneticClient.same_ip_address(
-                "192.168.3.140",
-                "192.168.3.140",
+                "192.0.2.10",
+                "192.0.2.10",
             )
         )
         self.assertFalse(
             KeeneticClient.same_ip_address(
-                "192.168.3.140",
-                "192.168.3.141",
+                "192.0.2.10",
+                "192.0.2.11",
             )
         )
         self.assertIsNone(

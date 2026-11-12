@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
+    QComboBox,
     QLabel,
     QPushButton,
     QStackedLayout,
@@ -424,6 +425,120 @@ class RouterSwitchingTests(unittest.TestCase):
         self.assertEqual(label.property("supportMode"), "limited")
         self.assertIn("Мониторинг устройства", feature_list.text())
         self.assertIn("Управление Wi-Fi — Недоступно", feature_list.text())
+
+    def test_background_update_keeps_user_selected_update_channel(self) -> None:
+        combo = QComboBox()
+        status = QLabel()
+        selected_router_id = 8
+        harness = SimpleNamespace(
+            router_update_channel_combo=combo,
+            router_update_status_label=status,
+            get_selected_router_id=lambda: selected_router_id,
+        )
+        controller = SettingsTabController(harness)
+        info = {
+            "channel": "stable",
+            "message": "Доступна KeeneticOS 5.1.4.",
+            "channels": [
+                {"name": "stable", "label": "Основной", "version": "5.1.4"},
+                {"name": "draft", "label": "Тестовый", "version": "5.2"},
+            ],
+        }
+
+        controller._show_router_update_info(info)
+        combo.setCurrentIndex(combo.findData("draft"))
+        controller._show_router_update_info(info)
+
+        self.assertEqual(combo.currentData(), "draft")
+        self.assertEqual(status.text(), "Доступна KeeneticOS 5.1.4.")
+
+    def test_router_connection_automatically_loads_update_channels(self) -> None:
+        class UpdateMonitor:
+            def __init__(self) -> None:
+                self.requests = 0
+
+            def request_router_update_check(self) -> None:
+                self.requests += 1
+
+        monitor = UpdateMonitor()
+        combo = QComboBox()
+        combo.addItem("Основной — стабильные выпуски", "stable")
+        harness = SimpleNamespace(
+            router_update_channel_combo=combo,
+            router_update_status_label=QLabel(),
+            router_update_version_label=QLabel(),
+            router_update_check_button=QPushButton(),
+            router_update_apply_channel_button=QPushButton(),
+            router_update_install_button=QPushButton(),
+            router_monitors={8: monitor},
+            connection_results={},
+            get_selected_router_id=lambda: 8,
+            router_is_fully_connected=lambda _router_id: True,
+        )
+        controller = SettingsTabController(harness)
+        result = SimpleNamespace(
+            version="5.01.C.4.0-1",
+            version_data={"title": "5.1.4"},
+        )
+
+        controller.sync_router_update_for_selected_router(result)
+        controller.sync_router_update_for_selected_router(result)
+
+        self.assertEqual(monitor.requests, 1)
+        self.assertEqual(combo.count(), 1)
+        self.assertEqual(combo.currentData(), "")
+        self.assertEqual(combo.currentText(), "Получение каналов...")
+        self.assertFalse(harness.router_update_channel_combo.isEnabled())
+
+    def test_reconnect_confirms_installed_router_update_version(self) -> None:
+        combo = QComboBox()
+        combo.addItem("Основной — 5.01.C.4.0-1", "stable")
+        harness = SimpleNamespace(
+            router_update_channel_combo=combo,
+            router_update_status_label=QLabel(),
+            router_update_version_label=QLabel(),
+            router_update_check_button=QPushButton(),
+            router_update_apply_channel_button=QPushButton(),
+            router_update_install_button=QPushButton(),
+            router_monitors={},
+            connection_results={},
+            get_selected_router_id=lambda: 8,
+            router_is_fully_connected=lambda _router_id: True,
+        )
+        controller = SettingsTabController(harness)
+        controller.router_update_info[8] = {
+            "supported": True,
+            "channel": "stable",
+            "installed_version": "5.1.1",
+            "available_version": "5.1.4",
+            "update_available": False,
+            "message": "Ожидается перезагрузка роутера.",
+            "channels": [
+                {
+                    "name": "stable",
+                    "label": "Основной",
+                    "version": "5.01.C.4.0-1",
+                }
+            ],
+        }
+        controller.router_update_expected_versions[8] = "5.01.C.4.0-1"
+
+        controller.sync_router_update_for_selected_router(
+            SimpleNamespace(
+                version="5.01.C.4.0-1",
+                version_data={"title": "5.1.4"},
+            )
+        )
+
+        self.assertNotIn(8, controller.router_update_expected_versions)
+        self.assertEqual(
+            controller.router_update_info[8]["installed_version"],
+            "5.1.4",
+        )
+        self.assertIn(
+            "Обновление завершено",
+            harness.router_update_status_label.text(),
+        )
 
     def test_compatibility_feature_state_drives_unsupported_controls(self) -> None:
         result = SimpleNamespace(

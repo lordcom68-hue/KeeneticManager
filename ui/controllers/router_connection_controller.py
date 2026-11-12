@@ -222,6 +222,20 @@ class RouterConnectionController:
         monitor.router_self_check_completed.connect(
             window.router_self_check_controller.completed
         )
+        router_update_signal = getattr(
+            monitor,
+            "router_update_completed",
+            None,
+        )
+        settings_controller = getattr(
+            window,
+            "settings_tab_controller",
+            None,
+        )
+        if router_update_signal is not None and settings_controller is not None:
+            router_update_signal.connect(
+                settings_controller.router_update_completed
+            )
         monitor.monitor_stopped.connect(window.monitor_stopped)
         monitor.finished.connect(
             lambda rid=router_id, thread=monitor: (
@@ -527,6 +541,13 @@ class RouterConnectionController:
         window.pending_rescue_modes.pop(router_id, None)
         window.pending_rescue_handoffs.discard(router_id)
         window.router_self_check_controller.monitor_stopped(router_id)
+        settings_controller = getattr(
+            window,
+            "settings_tab_controller",
+            None,
+        )
+        if settings_controller is not None:
+            settings_controller.router_update_monitor_stopped(router_id)
         monitor = self.monitors.pop(router_id, None)
         if monitor is not None:
             self.stopping_monitors[router_id] = monitor

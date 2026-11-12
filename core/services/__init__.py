@@ -198,6 +198,14 @@ _EXPORTS: dict[str, tuple[str, str]] = {
         "router_refresh_service",
         "RouterRefreshService",
     ),
+    "RouterUpdateInfo": (
+        "router_update_service",
+        "RouterUpdateInfo",
+    ),
+    "RouterUpdateService": (
+        "router_update_service",
+        "RouterUpdateService",
+    ),
     "RouterSelfCheckCancelled": (
         "router_self_check_service",
         "RouterSelfCheckCancelled",

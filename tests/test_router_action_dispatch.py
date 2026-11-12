@@ -8,6 +8,7 @@ from typing import Any
 
 from core.connection_worker import RouterMonitor
 from core.router_action_models import RouterActionRequest
+from core.services.operation_result import OperationResult
 
 
 class RouterActionDispatchTests(unittest.TestCase):
@@ -131,6 +132,37 @@ class RouterActionDispatchTests(unittest.TestCase):
         )
         self.assertEqual(emitted, [(41, "create", True, "Архив создан.")])
 
+    def test_router_update_install_enters_expected_reboot_handoff(self) -> None:
+        emitted: list[tuple[Any, ...]] = []
+        close_calls: list[bool] = []
+        client = SimpleNamespace(
+            router_update_service=SimpleNamespace(
+                install_update=lambda channel: OperationResult.unknown_result(
+                    "Установка запущена.",
+                    channel=channel,
+                    reboot_expected=True,
+                )
+            ),
+            operation_history_service=SimpleNamespace(
+                record=lambda *_args, **_kwargs: None
+            ),
+            close=lambda: close_calls.append(True),
+        )
+        self.monitor.router_update_completed.connect(
+            lambda *args: emitted.append(args)
+        )
+
+        refresh = self.monitor.process_action(
+            client=client,  # type: ignore[arg-type]
+            action_type="router_update_install",
+            payload="stable",
+        )
+
+        self.assertFalse(refresh)
+        self.assertEqual(emitted[0][:4], (41, "install", True, "Установка запущена."))
+        self.assertEqual(self.monitor.expected_handoff_mode(), "auto")
+        self.assertEqual(close_calls, [True])
+
     def test_unknown_action_remains_explicit_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "Неизвестное действие"):
             self.monitor.process_action(
@@ -174,7 +206,7 @@ class RouterActionDispatchTests(unittest.TestCase):
 
         self.assertLessEqual(process_action.end_lineno - process_action.lineno + 1, 15)
         self.assertLessEqual(dispatch.end_lineno - dispatch.lineno + 1, 20)
-        self.assertEqual(len(action_handlers), 25)
+        self.assertEqual(len(action_handlers), 28)
         self.assertLessEqual(
             max(method.end_lineno - method.lineno + 1 for method in action_handlers.values()),
             75,

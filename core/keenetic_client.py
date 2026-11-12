@@ -78,6 +78,7 @@ from core.services.rescue_mode_service import (
     RescueModeService,
 )
 from core.services.router_refresh_service import RouterRefreshService
+from core.services.router_update_service import RouterUpdateService
 from core.services.router_compatibility_service import (
     RouterCompatibilityProfile,
     RouterCompatibilityService,
@@ -221,6 +222,7 @@ class KeeneticClient:
         self.wifi_network_service = WiFiNetworkService(self)
         self.wifi_client_service = WiFiClientService(self)
         self.rescue_mode_service = RescueModeService(self)
+        self.router_update_service = RouterUpdateService(self)
         self.system_log_service = SystemLogService(self)
         self.system_status_service = SystemStatusService()
         self.usb_service = UsbService(self)

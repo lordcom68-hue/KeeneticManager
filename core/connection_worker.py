@@ -122,6 +122,13 @@ class RouterMonitor(QThread):
         str,
         object,
     )
+    router_update_completed = Signal(
+        int,
+        str,
+        bool,
+        str,
+        object,
+    )
     monitor_stopped = Signal(int)
     OFFLINE_RETRY_DELAYS_MS = (
         5_000,
@@ -130,6 +137,7 @@ class RouterMonitor(QThread):
         30_000,
     )
     HANDOFF_TIMEOUT_SECONDS = 90.0
+    FIRMWARE_UPDATE_HANDOFF_SECONDS = 600.0
     HANDOFF_RETRY_DELAY_MS = 5_000
     OFFLINE_ACTIONS = frozenset(
         {"diagnostic_archive", "clear_diagnostics"}
@@ -227,7 +235,11 @@ class RouterMonitor(QThread):
 
         handoff_mode = self.expected_handoff_mode()
         if handoff_mode:
-            target_title = "KeenDNS" if handoff_mode == "keendns" else "локальный адрес"
+            target_title = {
+                "keendns": "KeenDNS",
+                "local": "локальный адрес",
+                "auto": "роутер после перезагрузки",
+            }.get(handoff_mode, "роутер")
             result.connection_state = "handoff"
             result.confirmed_offline = False
             result.transient_failure_suppressed = True
@@ -713,6 +725,15 @@ class RouterMonitor(QThread):
             tuple(str(key) for key in (check_keys or ())) or None,
         )
 
+    def request_router_update_check(self) -> None:
+        self._put_action("router_update_check", None)
+
+    def request_router_update_channel(self, channel: str) -> None:
+        self._put_action("router_update_channel", str(channel))
+
+    def request_router_update_install(self, channel: str) -> None:
+        self._put_action("router_update_install", str(channel))
+
     def request_clear_diagnostics(self) -> None:
         self._put_action(
             "clear_diagnostics",
@@ -1061,6 +1082,25 @@ class RouterMonitor(QThread):
                 False,
                 message,
                 None,
+            )
+            return
+
+        if action_type in {
+            "router_update_check",
+            "router_update_channel",
+            "router_update_install",
+        }:
+            operation = {
+                "router_update_check": "check",
+                "router_update_channel": "channel",
+                "router_update_install": "install",
+            }[action_type]
+            self.router_update_completed.emit(
+                self.router_id,
+                operation,
+                False,
+                message,
+                {"exception": type(error).__name__},
             )
             return
 
@@ -1413,13 +1453,20 @@ class RouterMonitor(QThread):
         self,
         client: KeeneticClient,
         connection_mode: str,
+        *,
+        timeout_seconds: float | None = None,
     ) -> None:
         mode = str(connection_mode or "").strip().lower()
-        if mode not in {"local", "keendns"}:
+        if mode not in {"local", "keendns", "auto"}:
             return
+        timeout = (
+            self.HANDOFF_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else max(1.0, float(timeout_seconds))
+        )
         with self._lock:
             self._handoff_connection_mode = mode
-            self._handoff_deadline = time.monotonic() + self.HANDOFF_TIMEOUT_SECONDS
+            self._handoff_deadline = time.monotonic() + timeout
             self._authentication_blocked = False
         client.close()
         self._wake_event.set()

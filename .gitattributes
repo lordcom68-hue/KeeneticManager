@@ -1,0 +1,3 @@
+*.sh text eol=lf
+tools/wan_wisp_guard/*.conf text eol=lf
+tools/wan_wisp_guard/S80wan-wisp-guard text eol=lf

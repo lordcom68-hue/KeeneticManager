@@ -34,6 +34,9 @@ class RouterActionDispatcher:
         "diagnostic_archive": "_handle_diagnostic_archive",
         "system_log": "_handle_system_log",
         "router_self_check": "_handle_router_self_check",
+        "router_update_check": "_handle_router_update_check",
+        "router_update_channel": "_handle_router_update_channel",
+        "router_update_install": "_handle_router_update_install",
         "clear_diagnostics": "_handle_clear_diagnostics",
     }
 
@@ -808,6 +811,79 @@ class RouterActionDispatcher:
             result,
         )
         return False
+
+    def _handle_router_update_check(
+        self,
+        client: KeeneticClient,
+        payload: object,
+    ) -> bool:
+        del payload
+        success, message, details = (
+            client.router_update_service.check_for_updates()
+        )
+        self.router_update_completed.emit(
+            self.router_id,
+            "check",
+            success,
+            message,
+            details,
+        )
+        return False
+
+    def _handle_router_update_channel(
+        self,
+        client: KeeneticClient,
+        payload: object,
+    ) -> bool:
+        result = client.router_update_service.set_channel(str(payload or ""))
+        self._record_operation(
+            client,
+            "router_update",
+            result.message,
+            success=result.accepted,
+            details={"operation": "channel"},
+            result_details=result.details,
+        )
+        self.router_update_completed.emit(
+            self.router_id,
+            "channel",
+            result.accepted,
+            result.message,
+            result.details,
+        )
+        return False
+
+    def _handle_router_update_install(
+        self,
+        client: KeeneticClient,
+        payload: object,
+    ) -> bool:
+        result = client.router_update_service.install_update(str(payload or ""))
+        self._record_operation(
+            client,
+            "router_update",
+            result.message,
+            success=result.accepted,
+            details={"operation": "install"},
+            result_details=result.details,
+        )
+        self.router_update_completed.emit(
+            self.router_id,
+            "install",
+            result.accepted,
+            result.message,
+            result.details,
+        )
+        reboot_expected = bool(
+            result.accepted and result.details.get("reboot_expected")
+        )
+        if reboot_expected:
+            self.begin_expected_handoff(
+                client,
+                "auto",
+                timeout_seconds=self.FIRMWARE_UPDATE_HANDOFF_SECONDS,
+            )
+        return not reboot_expected
 
     def _handle_clear_diagnostics(
         self,

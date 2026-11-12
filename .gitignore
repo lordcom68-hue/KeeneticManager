@@ -13,6 +13,8 @@ htmlcov/
 # Build artefacts
 build/
 dist/
+backups/
+clean_backups/
 *.egg-info/
 
 # Temporary and merge files
@@ -31,8 +33,21 @@ dist/
 /logs/*
 /diagnostics_history/*
 /diagnostics/*
+/cache/*
+/data/*
 *.log
 keenetic_diagnostic_*.zip
+
+# Local configuration, credentials, and signing material
+.env
+.env.*
+!.env.example
+*.pem
+*.pfx
+*.p12
+*.key
+*.cer
+*.crt
 
 # Local editor and OS files
 .vscode/
