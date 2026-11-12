@@ -179,7 +179,10 @@ class FirmwareCatalogDialogTests(unittest.TestCase):
 
             self.assertEqual(warning.call_count, 1)
             record = service.list_records()[0]
-            self.assertEqual(record.inspection.file_path, str(root / "original.bin"))
+            self.assertEqual(
+                record.inspection.file_path,
+                str((root / "original.bin").resolve()),
+            )
 
     def test_cancel_and_close_are_guarded_while_worker_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

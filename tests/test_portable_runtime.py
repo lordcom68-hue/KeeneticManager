@@ -42,15 +42,15 @@ class PortableRuntimeTests(unittest.TestCase):
                 self.assertEqual(resolved, root.resolve())
                 self.assertEqual(
                     Path(os.environ["KEENETIC_MANAGER_DATA_DIR"]),
-                    root / "data",
+                    root.resolve() / "data",
                 )
                 self.assertEqual(
                     Path(os.environ["KEENETIC_MANAGER_SETTINGS_FILE"]),
-                    root / "data" / "settings.ini",
+                    root.resolve() / "data" / "settings.ini",
                 )
                 self.assertEqual(
                     Path(os.environ["KEENETIC_MANAGER_PROFILE"]),
-                    root / "portable_profile.json",
+                    root.resolve() / "portable_profile.json",
                 )
 
     def test_regular_executable_ignores_portable_environment(self) -> None:

@@ -70,7 +70,10 @@ class FirmwareCatalogServiceTests(unittest.TestCase):
             records = service.list_records()
 
             self.assertEqual(len(records), 1)
-            self.assertEqual(records[0].inspection.file_path, str(second_path))
+            self.assertEqual(
+                records[0].inspection.file_path,
+                str(second_path.resolve()),
+            )
             self.assertNotEqual(
                 records[0].first_analyzed_at,
                 records[0].last_analyzed_at,
@@ -146,9 +149,15 @@ class FirmwareCatalogServiceTests(unittest.TestCase):
             updated = service.list_records()[0]
 
             self.assertIsNone(rejected)
-            self.assertEqual(unchanged.inspection.file_path, str(original_path))
+            self.assertEqual(
+                unchanged.inspection.file_path,
+                str(original_path.resolve()),
+            )
             self.assertIsNotNone(accepted)
-            self.assertEqual(updated.inspection.file_path, str(correct_path))
+            self.assertEqual(
+                updated.inspection.file_path,
+                str(correct_path.resolve()),
+            )
 
     def test_remove_and_clear_never_delete_source_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
